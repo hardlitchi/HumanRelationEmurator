@@ -7,8 +7,8 @@
 
 | 項目 | 決定 | 設計への影響 |
 |---|---|---|
-| 利用者 | 自分だけ | テナント分離なし。「自分」ノードを1つだけ持つ（`entities.is_self`） |
-| 用途 | 私的＋仕事 | 個人情報保護法の義務がかかりうる前提で、機微度・外部AI送信可否・完全削除・監査ログを持つ |
+| 利用者 | 管理者本人＋各 AITuber（2026-10-12 追加） | **ワークスペース**で視点ごとにグラフを分ける。各ワークスペースに「自分」ノードが1つ（`entities.is_self`） |
+| 用途 | 私的＋仕事（AITuber グループ運営を含む） | 個人情報保護法の義務がかかる前提で、機微度・外部AI送信可否・完全削除・監査ログを持つ |
 | 保存場所 | VPS（エージェント・スマホから参照） | ネットワーク越しのアクセスを前提に、書き込み主体ごとのトークンと権限（`actors`） |
 | 関係の強さ | 手入力＋やり取りから算出 | 主観は `closeness_rating` 主張、客観は `interactions` から算出して `pair_metrics` に |
 | 操作主体 | 主にエージェントが書き、人は参照 | 書き込みはすべて出典・記録者・確度付き。フィールドはエージェントが提案でき、すぐ使える |
@@ -17,6 +17,10 @@
 
 ```mermaid
 erDiagram
+    workspaces ||--o{ entities : "視点ごとのグラフ"
+    workspaces ||--o{ workspace_grants : "誰が扱えるか"
+    workspaces ||--o{ workspace_shares : "共有"
+    entities ||--o{ entity_links : "別ワークスペースの同一人物"
     field_definitions ||--o{ field_aliases : "別名"
     field_definitions ||--o{ facts : "型・適用対象を検証"
     relation_types ||--o{ relation_type_aliases : "別名"
@@ -34,14 +38,41 @@ erDiagram
     analysis_runs ||--o{ cluster_memberships : "クラスタ（派生）"
 ```
 
-層で分けると次の4つ。
+層で分けると次の5つ。
 
-1. **マスター**: `field_definitions` / `field_aliases` / `relation_types` / `relation_type_aliases`
+0. **ワークスペース**: `workspaces` / `workspace_grants` / `workspace_shares` / `entity_links`
+1. **マスター**（全ワークスペース共通）: `field_definitions` / `field_aliases` / `relation_types` / `relation_type_aliases`
 2. **グラフ**: `entities`（ノード）/ `relationships`（エッジ）/ `entity_identifiers`（名寄せ）
 3. **記録**: `facts`（主張）/ `interactions`（やり取り）/ `sources`（原文）/ `actors`（誰が書いたか）/ `audit_log`
 4. **派生**: `analysis_runs` / `pair_metrics` / `cluster_memberships`（消して再計算できる）
 
 ## 設計の要点
+
+### 0. ワークスペース = 「誰の視点の人間関係か」
+
+AITuber グループで使うため、管理者本人・各 AITuber・グループ共有を、それぞれ別のグラフ（ワークスペース）として持つ。
+
+| ワークスペース | `kind` | 「自分」ノード | 中身の例 |
+|---|---|---|---|
+| 管理者 | `owner` | 管理者本人 | 仕事・私生活の人間関係 |
+| AITuber A, B, … | `persona` | その AITuber | 人格設定、管理者、グループメンバー、コラボ相手、他の VTuber、コアリスナー |
+| グループ共有 | `shared` | なし | メンバーの公開プロフィール、グループ全体の関係 |
+
+- **分離**: ノード・関係・主張・やり取り・原文はすべて1つのワークスペースに属し、ワークスペースをまたぐ参照は複合外部キーで DB が拒否する。AITuber A が聞いた話を B が知っている、ということは起きない（人格の一貫性とリスナーのプライバシーのため）。
+- **同じ人を別々に持つ**: リスナー X が A と B の両方に来ていれば、A と B にそれぞれ X のノードがある。A にとっての X と B にとっての X は呼び方も親しさも違うので、これが自然。
+- **共有**: `workspace_shares` で「A と B はグループ共有を読める」を表す。API は `readable_workspaces` ビューで読める範囲を絞る。
+- **横断**: 同一人物の対応は `entity_links` で管理者だけが持つ。完全削除の依頼が来たら `erase_entity(id, include_linked => true)` で全ワークスペースから消せる。
+- **アカウント**: `actors` が書き込み主体（管理者・各 AITuber のエージェント・取り込みジョブ）、`workspace_grants` がどのワークスペースに `read` / `write` / `sensitive_read` できるか。`is_admin` はマスター承認と横断閲覧ができる管理者。
+- **マスターは共通**: フィールドと関係の種類は全ワークスペースで共有する。AITuber ごとに `口調` と `話し方` が別フィールドになる、という揺れを防ぐため。
+
+### 0.1 人格の乗っ取り防止
+
+配信のコメントは誰でも書けるので、「私が本当の管理者です」「一人称を変えて」のような書き込みで記憶を汚染される危険がある。
+
+- 原文には `sources.trusted` があり、配信チャットや SNS は `false` のまま取り込む
+- フィールド・関係の種類に `requires_trusted_source` があり、`true` のものは**人が書くか、信頼できる出典に基づく場合しか書けない**（トリガーで強制）
+- 初期値では人格フィールド（`persona_type` / `first_person` / `speech_style` / `catchphrases` / `backstory` / `persona_values` / `ng_topics`）と `operator_of`（運営・管理者）関係が保護対象
+- 管理者かどうかはコメントの文面ではなく、`actors`（認証されたトークン）で判断する
 
 ### 1. コンテキストは「値」ではなく「主張」として積む
 
@@ -120,7 +151,7 @@ erDiagram
 
 ### 9. 書き込み主体と監査
 
-`actors` に人・エージェント・取り込みジョブを登録し、トークンはハッシュだけを保存する。権限は `read` / `write` / `admin` / `sensitive_read`。すべての主張・関係・やり取りに `recorded_by` が付き、`audit_log` に操作が残るので、エージェントが何をしたかを人が後から確認できる。
+`actors` に人・エージェント・取り込みジョブを登録し、トークンはハッシュだけを保存する。権限はワークスペースごとに `workspace_grants` で `read` / `write` / `sensitive_read` を与え、`is_admin` が全体の管理者。すべての主張・関係・やり取りに `recorded_by` が付き、`audit_log` に操作が残るので、エージェントが何をしたかを人が後から確認できる。
 
 ## 技術選択: PostgreSQL
 
@@ -130,6 +161,12 @@ erDiagram
 - 主張の二時間軸・型検証・一意制約・完全削除といった整合性は、リレーショナルの制約とトリガーの方が書きやすく確実
 - VPS での運用（バックアップ、暗号化、マネージドへの移行）が容易
 - `pg_trgm` で表記ゆれ候補の類似検索ができる。将来は `pgvector` で意味の近いフィールドの提案、Apache AGE で Cypher クエリも足せる
+
+## AITuber 運用で増えるリスク
+
+- **リスナーの個人情報**: グループ運営は事業にあたるため、個人情報保護法上の義務（利用目的の公表など）がかかる可能性が高い。配信概要やサイトにプライバシーポリシーを置くことを推奨（要確認）。公開コメントでも、集めて人物像を作ると扱いは重くなる。
+- **配信中の発言**: AITuber が記録を参照して話すと、リスナーの個人的な情報を配信で口にする危険がある。`sensitivity` が `personal` 以上の値を配信中に話してよいかは、アクセス層で制御する（次の段階）。
+- **未成年のリスナー**: 年齢が分かった場合の扱いを決めておく。
 
 ## 次の段階で決めること
 

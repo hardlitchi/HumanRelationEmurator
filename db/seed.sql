@@ -21,7 +21,7 @@ WITH seed (key, label, value_type, enum_options, applies_to, cardinality, sensit
     ('likes', '好きなもの', 'text', NULL, '{person}', 'many', 'personal', true,
         '食べ物・話題・ブランドなど', '{好き,好物,favorite,favorites}'),
     ('dislikes', '苦手なもの', 'text', NULL, '{person}', 'many', 'personal', true,
-        'アレルギー等の健康情報は health_notes へ', '{嫌い,嫌いなもの,苦手,ng}'),
+        'アレルギー等の健康情報は health_notes へ', '{嫌い,嫌いなもの,苦手}'),
     ('communication_preference', '連絡の好み', 'text', NULL, '{person}', 'one', 'personal', true,
         '好む連絡手段・時間帯・文体', '{連絡手段,contact_preference,連絡方法}'),
     ('personality_notes', '人柄', 'text', NULL, '{person}', 'many', 'personal', true,
@@ -47,7 +47,30 @@ WITH seed (key, label, value_type, enum_options, applies_to, cardinality, sensit
     ('inside_jokes', '内輪ネタ', 'text', NULL, '{relationship}', 'many', 'personal', true,
         NULL, '{内輪,inside_joke}'),
     ('introduced_by', '紹介者', 'entity_ref', NULL, '{relationship}', 'one', 'personal', true,
-        'この関係を紹介した人', '{紹介,紹介元}')
+        'この関係を紹介した人', '{紹介,紹介元}'),
+    ('calls_them', '呼び方（自分→相手）', 'text', NULL, '{relationship}', 'one', 'normal', true,
+        'このワークスペースの主が相手をどう呼ぶか', '{呼び方,あだ名,nickname}'),
+    ('called_by_them', '呼ばれ方（相手→自分）', 'text', NULL, '{relationship}', 'one', 'normal', true,
+        '相手からどう呼ばれているか', '{呼ばれ方}'),
+    ('support_notes', '応援の記録', 'text', NULL, '{relationship}', 'many', 'personal', true,
+        'スパチャ・メンバーシップ・ファンアートなど。金額は書いてよいが決済情報は書かない', '{応援,スパチャ,superchat,membership,メンバーシップ}'),
+    ('first_seen', '初めて会った日', 'date', NULL, '{relationship}', 'one', 'normal', true,
+        '初見の配信日など', '{初見,初対面}'),
+    -- 人格（AITuber 等）。人か信頼できる出典からしか書けない
+    ('persona_type', '種別', 'enum', '{human,vtuber,aituber,other}', '{person}', 'one', 'normal', true,
+        '実在の人か、VTuber・AITuber 等のキャラクターか', '{種別,タイプ}'),
+    ('first_person', '一人称', 'text', NULL, '{person}', 'one', 'normal', true,
+        NULL, '{一人称}'),
+    ('speech_style', '口調', 'text', NULL, '{person}', 'many', 'normal', true,
+        '語尾・敬語の使い方・話し方の特徴', '{話し方,語尾,口調}'),
+    ('catchphrases', '口癖・決め台詞', 'text', NULL, '{person}', 'many', 'normal', true,
+        NULL, '{口癖,決め台詞,catchphrase}'),
+    ('backstory', '設定・背景', 'text', NULL, '{person}', 'many', 'normal', true,
+        'キャラクターの設定。実在の人には使わない', '{設定,生い立ち,lore,背景}'),
+    ('persona_values', '人格の価値観', 'text', NULL, '{person}', 'many', 'normal', true,
+        'キャラクターの価値観・信条。実在の人の信条は記録しない（要配慮個人情報）', '{価値観}'),
+    ('ng_topics', 'NG・避ける話題', 'text', NULL, '{person}', 'many', 'normal', true,
+        NULL, '{ng,地雷,避ける話題,ng話題}')
 ),
 ins AS (
     INSERT INTO field_definitions (key, label, value_type, enum_options, applies_to, cardinality,
@@ -75,7 +98,10 @@ WITH seed (key, label, directed, inverse_label, source_kinds, target_kinds, alia
     ('business_partner', '取引先',     false, NULL, '{person,organization}', '{person,organization}', '{取引先,client,顧客}'),
     ('works_at',         '所属',       true,  '所属メンバー', '{person}', '{organization}', '{勤務先,所属,employer,works_for}'),
     ('member_of',        'メンバー',   true,  'メンバー一覧', '{person}', '{group}', '{参加,所属グループ,belongs_to}'),
-    ('part_of',          '下部組織',   true,  '上部組織', '{organization,group}', '{organization,group}', '{子会社,部署,subsidiary}')
+    ('part_of',          '下部組織',   true,  '上部組織', '{organization,group}', '{organization,group}', '{子会社,部署,subsidiary}'),
+    ('operator_of',      '運営・管理者', true, '担当タレント', '{person}', '{person}', '{管理者,運営,マネージャー,operator}'),
+    ('collaborated_with','コラボ相手', false, NULL, '{person}', '{person}', '{コラボ,collab,共演}'),
+    ('listener_of',      'リスナー',   true,  '配信者', '{person}', '{person}', '{リスナー,ファン,視聴者,fan,viewer}')
 ),
 ins AS (
     INSERT INTO relation_types (key, label, directed, inverse_label, source_kinds, target_kinds, status)
@@ -86,3 +112,8 @@ INSERT INTO relation_type_aliases (alias, relation_type_id)
 SELECT DISTINCT normalize_label(a), ins.id
   FROM seed JOIN ins USING (key), unnest(seed.aliases) a
  WHERE normalize_label(a) <> seed.key;
+
+-- 人格・管理者関係は、配信チャット等からの書き換えを防ぐ
+UPDATE field_definitions SET requires_trusted_source = true
+ WHERE key IN ('persona_type', 'first_person', 'speech_style', 'catchphrases', 'backstory', 'persona_values', 'ng_topics');
+UPDATE relation_types SET requires_trusted_source = true WHERE key IN ('operator_of');
