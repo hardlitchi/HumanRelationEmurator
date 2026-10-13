@@ -1,6 +1,7 @@
 """管理用コマンド。DATABASE_URL に対して実行する。
 
   python -m hre_server.admin init-db
+  python -m hre_server.admin bootstrap                                  # 最初の管理者を作り、ログイン用トークンを表示
   python -m hre_server.admin create-workspace aituber-a "AITuber A" persona
   python -m hre_server.admin create-actor aituber-a-agent agent        # トークンは1度だけ表示
   python -m hre_server.admin grant aituber-a-agent aituber-a read,write
@@ -24,6 +25,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init-db", help="db/schema.sql と db/seed.sql を適用する（空の DB に1回だけ）")
+    b = sub.add_parser("bootstrap", help="最初の管理者と管理者用ワークスペース owner を作り、ログイン用トークンを表示する")
+    b.add_argument("name", nargs="?", default="admin", help="管理者の名前（既定: admin）")
     w = sub.add_parser("create-workspace")
     w.add_argument("key")
     w.add_argument("name")
@@ -51,6 +54,12 @@ def main() -> None:
                 for f in ("schema.sql", "seed.sql"):
                     conn.execute((DB_DIR / f).read_text())
                 print("schema and seed applied")
+            case "bootstrap":
+                try:
+                    token = service.bootstrap(conn, args.name)
+                except service.HreError as e:
+                    raise SystemExit(str(e))
+                print(f"管理者 {args.name} を作りました。Web UI のログイン画面に次のトークンを入力してください（表示はこの1回だけ）:\n{token}")
             case "create-workspace":
                 service.create_workspace(conn, args.key, args.name, args.kind)
                 print(f"workspace {args.key} created")

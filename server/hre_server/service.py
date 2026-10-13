@@ -1004,6 +1004,26 @@ def create_actor(conn: Connection, name: str, kind: str, is_admin: bool = False)
     return actor_id, token
 
 
+def has_admin(conn: Connection) -> bool:
+    return _one(conn, "SELECT 1 AS x FROM hre.actors WHERE is_admin AND revoked_at IS NULL LIMIT 1") is not None
+
+
+def bootstrap(conn: Connection, admin_name: str = "admin") -> str:
+    """最初の1回だけ: 管理者本人のワークスペース owner と、そこに全権限を持つ管理者（human）を作り、トークンを返す。
+
+    管理者がすでにいれば何もしない（2人目以降は Web UI の「アクセス」か create-actor で作る）。
+    """
+    with conn.transaction():
+        conn.execute("LOCK TABLE hre.actors IN SHARE ROW EXCLUSIVE MODE")
+        if has_admin(conn):
+            raise HreError("管理者はすでにいます。トークンをなくしたなら rotate-token <名前> で再発行してください")
+        if not _one(conn, "SELECT 1 AS x FROM hre.workspaces WHERE key = 'owner'"):
+            create_workspace(conn, "owner", "管理者", "owner")
+        _, token = create_actor(conn, admin_name, "human", True)
+        grant(conn, admin_name, "owner", ["read", "write", "sensitive_read"])
+    return token
+
+
 def rotate_token(conn: Connection, name: str) -> str:
     token = new_token()
     if _one(conn, "UPDATE hre.actors SET token_hash = %s, revoked_at = NULL WHERE name = %s RETURNING id",

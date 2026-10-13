@@ -59,16 +59,22 @@ hre.example.com {
 
 DB のスキーマと初期マスターは、`db-data` ボリュームが空の初回起動時に自動で入る（`hre-admin init-db` は不要）。
 
-## 3. 管理者とエージェントを作る
+## 3. 最初の管理者を作る
 
-`hre-admin` はコンテナの中で実行する。トークンは1度だけ表示されるので控えておく。
+起動しただけでは誰もログインできない。最初の1回だけ次を実行すると、管理者本人のワークスペース `owner` と管理者が作られ、ログイン用のトークン（`hre_` で始まる文字列）が表示される。
 
 ```sh
-docker compose exec mcp hre-admin create-workspace owner "管理者" owner
-docker compose exec mcp hre-admin create-actor ta human --admin       # Web UI のログイン用
-docker compose exec mcp hre-admin grant ta owner read,write,sensitive_read
+docker compose exec mcp hre-admin bootstrap ta     # ta は管理者の名前（省略すると admin）
+```
 
-docker compose exec mcp hre-admin create-actor owner-agent agent      # エージェント用
+- トークンが表示されるのはこの1回だけ。パスワードマネージャーなどに保存する
+- なくしたら `docker compose exec mcp hre-admin rotate-token ta` で再発行（古いトークンとそのログインは無効になる）
+- 管理者がすでにいるときは何もしない。2人目以降の利用者やエージェントは、Web UI の「アクセス」から追加する
+
+エージェント用のトークンをコマンドで作る場合:
+
+```sh
+docker compose exec mcp hre-admin create-actor owner-agent agent
 docker compose exec mcp hre-admin grant owner-agent owner read,write
 ```
 

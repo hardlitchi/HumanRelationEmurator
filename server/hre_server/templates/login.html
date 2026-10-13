@@ -4,6 +4,11 @@
 <section class="card narrow">
   <h1>ログイン</h1>
   <p class="muted">管理者から受け取ったトークン（<code>hre_</code> で始まる文字列）を入力してください。エージェント用のトークンでは入れません。</p>
+  {% if needs_setup %}
+  <p>まだ管理者がいません。サーバーで次を実行すると、最初の管理者のトークンが表示されます。</p>
+  <pre class="source"><code>docker compose exec mcp hre-admin bootstrap</code></pre>
+  <p class="muted">docker compose を使っていなければ <code>hre-admin bootstrap</code>。</p>
+  {% endif %}
   <form method="post" action="/login" class="stack">
     <input type="hidden" name="next" value="{{ next }}">
     <input type="password" name="token" placeholder="hre_..." autocomplete="current-password" required autofocus>

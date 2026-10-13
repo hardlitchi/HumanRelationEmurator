@@ -47,8 +47,10 @@
 
 `kind = human` の actor のトークンでログインする。エージェント用のトークンでは入れない。
 
+最初の管理者は `hre-admin bootstrap` で作る（トークンが1度だけ表示される）。管理者がまだいないあいだは、ログイン画面にもこのコマンドが表示される。
+
 ```sh
-hre-admin create-actor ta human --admin      # 管理者本人
+hre-admin bootstrap ta                       # 管理者本人
 hre-admin create-actor member-b human        # グループのメンバー
 hre-admin grant member-b group read
 ```

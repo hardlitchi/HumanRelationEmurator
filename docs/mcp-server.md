@@ -41,14 +41,13 @@ pip install -e .
 export DATABASE_URL=postgresql://hre:...@localhost/hre
 
 hre-admin init-db                                     # 空の DB にスキーマと初期マスターを入れる
-hre-admin create-workspace owner "管理者" owner
+hre-admin bootstrap ta                                # 管理者本人（ワークスペース owner と管理者）を作り、トークンを表示
 hre-admin create-workspace aituber-a "AITuber A" persona
 hre-admin create-workspace group "グループ共有" shared
 hre-admin share group aituber-a                       # AITuber A からグループ共有を読めるようにする
 
 hre-admin create-actor aituber-a-agent agent          # トークンが1度だけ表示される
 hre-admin grant aituber-a-agent aituber-a read,write
-hre-admin create-actor owner human --admin            # 管理者本人（マスター承認・完全削除）
 ```
 
 トークンをなくしたら `hre-admin rotate-token <name>`、無効にするなら `hre-admin revoke <name>`。
