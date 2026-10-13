@@ -207,8 +207,11 @@ def action(handler):
 # ---------------------------------------------------------------------------
 
 def login_form(request: Request) -> Response:
+    with pool().connection() as conn:
+        needs_setup = not service.has_admin(conn)   # 初回だけ、最初のトークンの出し方を案内する
     return templates.TemplateResponse(request, "login.html", {"next": request.query_params.get("next", "/"),
-                                                              "error": request.query_params.get("err")})
+                                                              "error": request.query_params.get("err"),
+                                                              "needs_setup": needs_setup})
 
 
 async def login(request: Request) -> Response:
