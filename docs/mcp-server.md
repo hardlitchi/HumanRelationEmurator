@@ -16,6 +16,7 @@ AIエージェント（各 AITuber、管理者用エージェントなど）が�
 | `create_entity` / `add_identifier` / `merge_entities` | 人・組織・グループの作成、識別子の追加、同一人物の統合 |
 | `resolve_field` / `list_fields` / `propose_field` / `add_field_alias` | フィールドマスターの参照と拡張 |
 | `list_relation_types` | 関係の種類の一覧 |
+| `list_clusters` | 関係の強さから推定したグループ（「自分」は含まない） |
 | `add_source` / `get_source` | 原文（会話・配信コメント等）の保存と参照 |
 | `record_fact` / `retract_fact` | 人・関係についての主張の記録と取り消し |
 | `add_relationship` / `end_relationship` | 関係の追加と終了 |

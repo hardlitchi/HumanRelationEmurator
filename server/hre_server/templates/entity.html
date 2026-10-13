@@ -130,6 +130,11 @@
   {% endif %}
 </section>
 
+{% if e.cluster %}
+<p class="small">グループ（推定）: <a href="/w/{{ e.workspace }}/clusters#c{{ e.cluster.id }}">グループ {{ e.cluster.id }}</a> —
+  {% for m in e.cluster.members[:8] %}<a href="/e/{{ m.id }}">{{ m.name }}</a>{% if not loop.last %}、{% endif %}{% endfor %}{% if e.cluster.members|length > 8 %} ほか{{ e.cluster.members|length - 8 }}人{% endif %}</p>
+{% endif %}
+
 <section>
   <h2>つながりの強さ</h2>
   <p class="muted small">やり取りの回数・深さ・新しさと、どちらから働きかけたかで算出した値（0〜100）。関係に「親しさ（主観）」があれば両者の平均です。関係を登録していない相手も、やり取りがあれば出ます。</p>

@@ -223,3 +223,15 @@ def test_strength_and_interactions_are_shown(app, conn, world):
     # 一覧を自分との強さ順に並べると、やり取りのある相手が先に来る
     page = c.get(f"/w/{world.a}", params={"sort": "strength"}).text
     assert page.index("コアリスナー") < page.index("Aさん（未接触）")
+
+
+def test_clusters_page(app, conn, world):
+    me = service.create_entity(conn, world.agent_a, "person", "AITuber A", world.a, is_self=True)["id"]
+    a = service.create_entity(conn, world.agent_a, "person", "常連1", world.a)["id"]
+    b = service.create_entity(conn, world.agent_a, "person", "常連2", world.a)["id"]
+    service.record_interaction(conn, world.agent_a, "2026-10-01T20:00:00+09:00", "stream_chat",
+                               [{"entity_id": a}, {"entity_id": b}, {"entity_id": me}], depth=2)
+    c = _login(app, world.tokens["owner"])
+    page = c.get(f"/w/{world.a}/clusters").text
+    assert "グループ 1" in page and "常連1" in page and "常連2" in page
+    assert "グループ（推定）" in c.get(f"/e/{a}").text

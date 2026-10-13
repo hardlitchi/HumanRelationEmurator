@@ -90,6 +90,14 @@ def build_server(auth_url: str | None = None) -> MCPServer:
         return _call(service.get_entity, entity_id=entity_id)
 
     @mcp.tool()
+    def list_clusters(workspace: str | None = None) -> dict:
+        """関係の強さから推定したグループ（よく一緒にいる人たち）。「自分」は含まない。"""
+        def run(c, a):
+            key = workspace or service._resolve_ws(c, a, None, "read")["key"]
+            return service.list_clusters(c, a, key)
+        return {"clusters": _call(run)}
+
+    @mcp.tool()
     def create_entity(kind: Literal["person", "organization", "group"], display_name: str,
                       workspace: str | None = None,
                       identifiers: Annotated[list[dict[str, str]] | None, Field(

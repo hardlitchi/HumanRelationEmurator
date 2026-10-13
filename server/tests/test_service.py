@@ -202,3 +202,35 @@ def test_tie_strength_from_interactions_and_rating(conn, world):
     # 古い計算結果は残さない
     assert conn.execute("SELECT count(*) FROM hre.analysis_runs r JOIN hre.workspaces w ON w.id = r.workspace_id "
                         "WHERE w.key = %s", (world.a,)).fetchone()[0] == 1
+
+
+def test_clusters_by_tie_strength(conn, world):
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    me = service.create_entity(conn, world.agent_a, "person", "AITuber A", world.a, is_self=True)["id"]
+    ids = {n: service.create_entity(conn, world.agent_a, "person", n, world.a)["id"]
+           for n in ["歌枠1", "歌枠2", "歌枠3", "ゲーム1", "ゲーム2", "ゲーム3"]}
+
+    def talk(*names, times=3):
+        for _ in range(times):
+            service.record_interaction(conn, world.agent_a, now, "stream_chat",
+                                       [{"entity_id": ids[n]} for n in names] + [{"entity_id": me}], depth=2)
+
+    talk("歌枠1", "歌枠2", "歌枠3")
+    talk("ゲーム1", "ゲーム2", "ゲーム3")
+    talk("歌枠3", "ゲーム1", times=1)          # 2つのグループの間の弱いつながり
+
+    clusters = service.list_clusters(conn, world.agent_a, world.a)
+    groups = sorted(sorted(m["name"] for m in c["members"]) for c in clusters)
+    assert groups == [["ゲーム1", "ゲーム2", "ゲーム3"], ["歌枠1", "歌枠2", "歌枠3"]]   # 自分は入らない
+    assert all(c["density"] == 1.0 and c["size"] == 3 for c in clusters)
+    assert all(m["self_strength"] > 0 for c in clusters for m in c["members"])
+
+    card = service.get_entity(conn, world.agent_a, ids["歌枠1"])
+    assert sorted(m["name"] for m in card["cluster"]["members"]) == ["歌枠2", "歌枠3"]
+    assert service.get_entity(conn, world.agent_a, me)["cluster"] is None
+
+    # 他のワークスペースのエージェントからは見えない
+    with pytest.raises(HreError, match="閲覧権限"):
+        service.list_clusters(conn, world.agent_b, world.a)

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}グループ · {{ ws.key }}{% endblock %}
+{% block body %}
+<p class="crumbs"><a href="/">ワークスペース</a> / <a href="/w/{{ ws.key }}">{{ ws.key }}</a> /</p>
+<h1>グループ（推定）</h1>
+<p class="muted small">関係の強さを重みにして、互いのつながりが濃い人たちを自動でまとめたものです（Louvain 法）。「自分」は全員とつながっているので除いて計算しています。記録が増えると変わります。</p>
+<ul class="list">
+{% for c in clusters %}
+  <li id="c{{ c.id }}">
+    <div class="row"><strong>グループ {{ c.id }}</strong>
+      <span class="muted small">{{ c.size }}人 · 内部の平均の強さ {{ c.avg_strength|pct }} · 密度 {{ c.density|pct }}%</span></div>
+    <ul class="chips">
+      {% for m in c.members %}<li><a href="/e/{{ m.id }}">{{ m.name }}</a>{% if m.self_strength is not none %} <span class="muted small">{{ m.self_strength|pct }}</span>{% endif %}</li>{% endfor %}
+    </ul>
+  </li>
+{% else %}
+  <li class="muted">まだグループを見つけられるだけの関係・やり取りがありません</li>
+{% endfor %}
+</ul>
+<p class="muted small">名前の横の数字は「自分」との強さ（0〜100）。メンバーはグループ内でのつながりが強い順です。</p>
+{% endblock %}

@@ -371,6 +371,7 @@ def get_entity(conn: Connection, actor: Actor, entity_id: str, detail: bool = Fa
             (edge["relationship_id"],)) if f["ai_shareable"] or sensitive_ok]
 
     ties = entity_ties(conn, e["workspace_id"], entity_id)
+    cluster = entity_cluster(conn, e["workspace_id"], entity_id)
     by_other = {t["other_id"]: t for t in ties}
     for edge in edges:
         t = by_other.get(edge["other_id"])
@@ -381,7 +382,7 @@ def get_entity(conn: Connection, actor: Actor, entity_id: str, detail: bool = Fa
                 (entity_id,))
     del e["workspace_id"], e["merged_into_id"]
     return {**e, "identifiers": idents, "facts": [_fact_view(f) for f in facts], "relationships": edges,
-            "ties": ties[:20], "hidden_sensitive_facts": hidden}
+            "ties": ties[:20], "cluster": cluster, "hidden_sensitive_facts": hidden}
 
 
 def _fact_view(f: dict) -> dict:
@@ -553,8 +554,9 @@ def record_interaction(conn: Connection, actor: Actor, occurred_at: str, channel
 # 関係の強さ（派生値）。docs/data-model.md「5. 関係の強さ・密度・クラスタは派生値」の v1
 # ---------------------------------------------------------------------------
 
-TIE_ALGORITHM = "tie_strength_v1"
-TIE_PARAMS = {"half_life_days": 90, "saturation": 5, "reciprocity_weight": 0.3, "max_age_hours": 6}
+TIE_ALGORITHM = "tie_strength_v1+louvain"   # 強さとクラスタは同じ run に入れる
+TIE_PARAMS = {"half_life_days": 90, "saturation": 5, "reciprocity_weight": 0.3, "max_age_hours": 6,
+              "cluster_resolution": 1.0, "cluster_min_weight": 0.1, "cluster_seed": 0}
 
 
 def _compute_ties(conn: Connection, ws_id: str) -> str:
@@ -628,9 +630,95 @@ def _compute_ties(conn: Connection, ws_id: str) -> str:
            SET common_neighbors = (SELECT count(DISTINCT p.y) FROM adj p JOIN adj q ON q.y = p.y
                                     WHERE p.x = pm.entity_a AND q.x = pm.entity_b)
          WHERE pm.run_id = %(run)s""", {"ws": ws_id, "run": run})
-    conn.execute("""DELETE FROM hre.analysis_runs WHERE workspace_id = %s AND algorithm = %s AND id <> %s""",
-                 (ws_id, TIE_ALGORITHM, run))
+    _compute_clusters(conn, ws_id, run)
+    conn.execute("""DELETE FROM hre.analysis_runs WHERE workspace_id = %s AND algorithm LIKE 'tie_strength_v1%%'
+                     AND id <> %s""", (ws_id, run))
     return run
+
+
+def _compute_clusters(conn: Connection, ws_id: str, run: str) -> None:
+    """強さを重みにした Louvain 法でグループを見つけ、cluster_memberships に保存する。
+
+    - 「自分」（is_self）は全員とつながっていて1つのグループに飲み込んでしまうので除いて計算する
+    - 重みは表示用の強さ。関係はあるがやり取りも親しさもないペアは cluster_min_weight で弱くつなぐ
+    - 2人以上のグループだけ保存し、cluster_id は大きい順に 1, 2, ...（seed 固定で毎回同じ結果）
+    """
+    import networkx as nx
+    from networkx.algorithms.community import louvain_communities
+
+    rows = _q(conn, """
+        SELECT pm.entity_a::text AS a, pm.entity_b::text AS b,
+               CASE WHEN pm.manual_strength IS NULL THEN pm.derived_strength
+                    ELSE (pm.derived_strength + pm.manual_strength) / 2 END AS w
+          FROM hre.pair_metrics pm
+          JOIN hre.entities ea ON ea.id = pm.entity_a
+          JOIN hre.entities eb ON eb.id = pm.entity_b
+         WHERE pm.run_id = %s AND NOT ea.is_self AND NOT eb.is_self""", (run,))
+    g = nx.Graph()
+    for r in rows:
+        g.add_edge(r["a"], r["b"], weight=max(float(r["w"]), TIE_PARAMS["cluster_min_weight"]))
+    if g.number_of_edges() == 0:
+        return
+    groups = louvain_communities(g, weight="weight", resolution=TIE_PARAMS["cluster_resolution"],
+                                 seed=TIE_PARAMS["cluster_seed"])
+    groups = sorted((sorted(c) for c in groups if len(c) >= 2), key=lambda c: (-len(c), c))
+    with conn.cursor() as cur:
+        cur.executemany("INSERT INTO hre.cluster_memberships (run_id, entity_id, cluster_id) VALUES (%s, %s, %s)",
+                        [(run, e, i) for i, members in enumerate(groups, 1) for e in members])
+
+
+def list_clusters(conn: Connection, actor: Actor, workspace: str) -> list[dict]:
+    """ワークスペース内のグループ（推定）。メンバーはグループ内でのつながりが強い順。"""
+    ws = _resolve_ws(conn, actor, workspace, "read")
+    run = tie_run(conn, ws["id"])
+    members = _q(conn, """
+        WITH m AS (SELECT entity_id, cluster_id FROM hre.cluster_memberships WHERE run_id = %(run)s),
+        w AS (
+            SELECT pm.entity_a, pm.entity_b,
+                   CASE WHEN pm.manual_strength IS NULL THEN pm.derived_strength
+                        ELSE (pm.derived_strength + pm.manual_strength) / 2 END AS s
+              FROM hre.pair_metrics pm WHERE pm.run_id = %(run)s)
+        SELECT m.cluster_id, e.id::text AS id, e.display_name AS name, e.kind,
+               coalesce((SELECT sum(w.s) FROM w JOIN m o ON o.entity_id IN (w.entity_a, w.entity_b)
+                          AND o.entity_id <> m.entity_id AND o.cluster_id = m.cluster_id
+                         WHERE m.entity_id IN (w.entity_a, w.entity_b)), 0) AS inner_strength,
+               (SELECT w.s FROM w JOIN hre.entities me ON me.workspace_id = e.workspace_id AND me.is_self
+                 WHERE (w.entity_a, w.entity_b) IN ((me.id, e.id), (e.id, me.id))) AS self_strength
+          FROM m JOIN hre.entities e ON e.id = m.entity_id
+         ORDER BY m.cluster_id, inner_strength DESC, e.display_name""", {"run": run})
+    clusters: dict[int, dict] = {}
+    for r in members:
+        c = clusters.setdefault(r["cluster_id"], {"id": r["cluster_id"], "members": []})
+        c["members"].append({"id": r["id"], "name": r["name"], "kind": r["kind"],
+                             "self_strength": None if r["self_strength"] is None else round(float(r["self_strength"]), 2)})
+    for c in clusters.values():
+        n = len(c["members"])
+        ids = [m["id"] for m in c["members"]]
+        inner = _one(conn, """
+            SELECT count(*) AS edges,   -- pair_metrics にはやり取り・親しさ・関係のいずれかがあるペアだけが入る
+                   avg(CASE WHEN manual_strength IS NULL THEN derived_strength
+                            ELSE (derived_strength + manual_strength) / 2 END) AS avg_strength
+              FROM hre.pair_metrics WHERE run_id = %s AND entity_a = ANY(%s::uuid[]) AND entity_b = ANY(%s::uuid[])""",
+                     (run, ids, ids))
+        c["size"] = n
+        c["density"] = round(inner["edges"] / (n * (n - 1) / 2), 2)
+        c["avg_strength"] = round(float(inner["avg_strength"] or 0), 2)
+        c["label"] = "・".join(m["name"] for m in c["members"][:2]) + (f" ほか{n - 2}人" if n > 2 else "")
+    return list(clusters.values())
+
+
+def entity_cluster(conn: Connection, ws_id: str, entity_id: str) -> dict | None:
+    """この人が入っているグループ（推定）と、ほかのメンバー。"""
+    run = tie_run(conn, ws_id)
+    row = _one(conn, "SELECT cluster_id FROM hre.cluster_memberships WHERE run_id = %s AND entity_id = %s",
+               (run, entity_id))
+    if row is None:
+        return None
+    others = _q(conn, """SELECT e.id::text, e.display_name AS name FROM hre.cluster_memberships m
+                           JOIN hre.entities e ON e.id = m.entity_id
+                          WHERE m.run_id = %s AND m.cluster_id = %s AND m.entity_id <> %s ORDER BY e.display_name""",
+                (run, row["cluster_id"], entity_id))
+    return {"id": row["cluster_id"], "members": others}
 
 
 def tie_run(conn: Connection, ws_id: str) -> str:

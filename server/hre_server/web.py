@@ -300,6 +300,13 @@ def source(request, conn, me):
 
 
 @page
+def clusters(request, conn, me):
+    key = request.path_params["key"]
+    return "clusters.html", {"ws": service.workspace_access(conn, me, key),
+                             "clusters": service.list_clusters(conn, me, key)}
+
+
+@page
 def sources(request, conn, me):
     key = request.path_params["key"]
     return "sources.html", {"ws": service.workspace_access(conn, me, key),
@@ -536,6 +543,7 @@ def create_app(secret: str | None = None, secure_cookies: bool = True,
         Route("/w/{key}", workspace),
         Route("/w/{key}/entities", create_entity, methods=["POST"]),
         Route("/w/{key}/sources", sources),
+        Route("/w/{key}/clusters", clusters),
         Route("/e/{id}", entity),
         Route("/e/{id}/rename", rename, methods=["POST"]),
         Route("/e/{id}/facts", add_fact, methods=["POST"]),
