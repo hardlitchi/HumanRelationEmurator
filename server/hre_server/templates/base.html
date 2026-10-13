@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+{% if csrf %}<meta name="csrf" content="{{ csrf }}">{% endif %}
+<title>{% block title %}人間関係{% endblock %} · HRE</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/">HRE</a>
+  {% if me %}
+  <nav>
+    <a href="/">ワークスペース</a>
+    <a href="/activity">更新履歴</a>
+    {% if me.is_admin %}<a href="/admin/fields">マスター</a><a href="/admin/access">アクセス</a>{% endif %}
+  </nav>
+  <form method="post" action="/logout" class="logout"><button class="link">{{ me.name }} · ログアウト</button></form>
+  {% endif %}
+</header>
+<main>
+  {% if flash %}<p class="flash ok">{{ flash }}</p>{% endif %}
+  {% if error %}<p class="flash err">{{ error }}</p>{% endif %}
+  {% block body %}{% endblock %}
+</main>
+</body>
+</html>

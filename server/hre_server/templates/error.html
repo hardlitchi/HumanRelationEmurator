@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}エラー{% endblock %}
+{% block body %}
+<section class="card">
+  <h1>表示できません</h1>
+  <p>{{ message }}</p>
+  {% if link %}<p><a href="{{ link }}">統合先を開く</a></p>{% endif %}
+  <p><a href="/">ワークスペース一覧へ</a></p>
+</section>
+{% endblock %}

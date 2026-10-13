@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}{{ ws.key }}{% endblock %}
+{% block body %}
+<p class="crumbs"><a href="/">ワークスペース</a> /</p>
+<h1>{{ ws.key }} <span class="tag">{{ WS_KINDS[ws.kind] }}</span></h1>
+<p class="links small"><a href="/w/{{ ws.key }}/sources">出典（原文）</a> · <a href="/activity?workspace={{ ws.key }}">このワークスペースの更新履歴</a></p>
+
+<form method="get" class="search">
+  <input type="search" name="q" value="{{ q }}" placeholder="名前・SNSハンドルで探す">
+  <select name="kind">
+    <option value="">すべて</option>
+    {% for k, label in KINDS.items() %}<option value="{{ k }}" {% if kind == k %}selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <button>検索</button>
+</form>
+
+<ul class="list">
+{% for e in entities %}
+  <li>
+    <a href="/e/{{ e.id }}" class="row">
+      <span>{% if e.is_self %}<span class="tag self">自分</span> {% endif %}<strong>{{ e.display_name }}</strong>
+        {% if e.kind != 'person' %}<span class="tag">{{ KINDS[e.kind] }}</span>{% endif %}</span>
+      <span class="muted small">関係 {{ e.relationship_count }} · 情報 {{ e.fact_count }}</span>
+    </a>
+  </li>
+{% else %}
+  <li class="muted">{% if q or kind %}該当する人はいません{% else %}まだ誰も記録されていません{% endif %}</li>
+{% endfor %}
+</ul>
+
+{% if ws.can_write %}
+<details class="card">
+  <summary>人・組織・グループを追加</summary>
+  <form method="post" action="/w/{{ ws.key }}/entities" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}">
+    <label>種類
+      <select name="kind">{% for k, label in KINDS.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select>
+    </label>
+    <label>表示名 <input name="display_name" required></label>
+    <div class="inline">
+      <label>識別子（任意）
+        <select name="id_scheme">
+          {% for s in ['x', 'youtube', 'twitch', 'discord', 'email', 'phone', 'name'] %}<option>{{ s }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>値 <input name="id_value" placeholder="@handle など"></label>
+    </div>
+    <p class="muted small">同じ識別子の人が既にいれば作らずにお知らせします。</p>
+    <button>追加</button>
+  </form>
+</details>
+{% endif %}
+{% endblock %}

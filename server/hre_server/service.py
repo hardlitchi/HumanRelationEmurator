@@ -326,7 +326,8 @@ def add_identifier(conn: Connection, actor: Actor, entity_id: str, scheme: str, 
     return {"entity_id": entity_id, "scheme": scheme, "value": value}
 
 
-def get_entity(conn: Connection, actor: Actor, entity_id: str) -> dict:
+def get_entity(conn: Connection, actor: Actor, entity_id: str, detail: bool = False) -> dict:
+    """detail=True なら Web UI 向けに出典・メモ・記録者・参照先の名前も付ける。"""
     e = _one(conn, """SELECT e.id::text, w.key AS workspace, e.workspace_id::text, e.kind, e.display_name, e.is_self,
                              e.merged_into_id::text
                         FROM hre.entities e JOIN hre.workspaces w ON w.id = e.workspace_id WHERE e.id = %s""",
@@ -339,25 +340,34 @@ def get_entity(conn: Connection, actor: Actor, entity_id: str) -> dict:
                 "hint": "このエンティティは統合済みです。merged_into の ID を参照してください"}
     sensitive_ok = _can_read_sensitive(actor, e["workspace_id"])
 
-    facts = _q(conn, """
+    extra = """, cf.source_id::text, cf.note, cf.sensitivity,
+               (SELECT name FROM hre.actors WHERE id = cf.recorded_by) AS recorded_by,
+               (SELECT display_name FROM hre.entities WHERE id = cf.value_entity_id) AS value_entity_name""" \
+        if detail else ""
+    facts = _q(conn, f"""
         SELECT id::text AS fact_id, field_key, field_label, cardinality, value, value_entity_id::text,
-               epistemic, confidence, valid_from, recorded_at, ai_shareable
-          FROM hre.current_facts WHERE entity_id = %s
+               epistemic, confidence, valid_from, recorded_at, ai_shareable{extra}
+          FROM hre.current_facts cf WHERE entity_id = %s
          ORDER BY field_key, CASE epistemic WHEN 'stated' THEN 0 WHEN 'observed' THEN 1 WHEN 'reported' THEN 2 ELSE 3 END,
                   confidence DESC, recorded_at DESC""", (entity_id,))
     hidden = sum(1 for f in facts if not f["ai_shareable"] and not sensitive_ok)
     facts = [f for f in facts if f["ai_shareable"] or sensitive_ok]
 
-    edges = _q(conn, """
+    edge_extra = """, a.directed, r.valid_from, (SELECT name FROM hre.actors WHERE id = r.recorded_by) AS recorded_by""" \
+        if detail else ""
+    edges = _q(conn, f"""
         SELECT a.relationship_id::text, a.relation_type, a.label, a.direction, a.to_id::text AS other_id,
-               o.display_name AS other_name, o.kind AS other_kind
+               o.display_name AS other_name, o.kind AS other_kind{edge_extra}
           FROM hre.active_edges a JOIN hre.entities o ON o.id = a.to_id
+          JOIN hre.relationships r ON r.id = a.relationship_id
          WHERE a.from_id = %s ORDER BY a.relation_type, o.display_name""", (entity_id,))
     for edge in edges:
-        edge["facts"] = [_fact_view(f) for f in _q(conn, """
+        if detail and edge["valid_from"] is not None:
+            edge["valid_from"] = str(edge["valid_from"])
+        edge["facts"] = [_fact_view(f) for f in _q(conn, f"""
             SELECT id::text AS fact_id, field_key, field_label, value, value_entity_id::text, epistemic, confidence,
-                   ai_shareable
-              FROM hre.current_facts WHERE relationship_id = %s ORDER BY field_key, recorded_at DESC""",
+                   valid_from, recorded_at, ai_shareable{extra}
+              FROM hre.current_facts cf WHERE relationship_id = %s ORDER BY field_key, recorded_at DESC""",
             (edge["relationship_id"],)) if f["ai_shareable"] or sensitive_ok]
 
     idents = _q(conn, "SELECT scheme, value FROM hre.entity_identifiers WHERE entity_id = %s ORDER BY scheme, value",
@@ -530,6 +540,211 @@ def record_interaction(conn: Connection, actor: Actor, occurred_at: str, channel
     except errors.Error as e:
         raise _db_error(e) from e
     return {"interaction_id": row["id"]}
+
+
+# ---------------------------------------------------------------------------
+# 人が参照・編集するための操作（Web UI から使う）
+# ---------------------------------------------------------------------------
+
+def workspace_access(conn: Connection, actor: Actor, key: str) -> dict:
+    """ワークスペースの行と、この actor ができること。"""
+    ws = _resolve_ws(conn, actor, key, "read")
+    return {**ws, "can_write": _can_write(actor, ws["id"]),
+            "can_read_sensitive": _can_read_sensitive(actor, ws["id"])}
+
+
+def list_entities(conn: Connection, actor: Actor, workspace: str, query: str | None = None,
+                  kind: str | None = None, limit: int = 300) -> list[dict]:
+    """ワークスペース内の人・組織・グループの一覧（統合済みは除く）。query は名前・識別子の部分一致。"""
+    ws = _resolve_ws(conn, actor, workspace, "read")
+    return _q(conn, """
+        SELECT e.id::text, e.kind, e.display_name, e.is_self, e.updated_at,
+               (SELECT count(*) FROM hre.active_edges a WHERE a.from_id = e.id) AS relationship_count,
+               (SELECT count(*) FROM hre.current_facts f WHERE f.entity_id = e.id) AS fact_count
+          FROM hre.entities e
+         WHERE e.workspace_id = %(ws)s AND e.merged_into_id IS NULL
+           AND (%(kind)s::text IS NULL OR e.kind = %(kind)s)
+           AND (%(q)s::text IS NULL OR e.display_name ILIKE '%%' || %(q)s || '%%'
+                OR EXISTS (SELECT 1 FROM hre.entity_identifiers i
+                            WHERE i.entity_id = e.id AND i.value ILIKE '%%' || %(q)s || '%%'))
+         ORDER BY e.is_self DESC, e.display_name
+         LIMIT %(limit)s""", {"ws": ws["id"], "kind": kind, "q": query or None, "limit": limit})
+
+
+def rename_entity(conn: Connection, actor: Actor, entity_id: str, display_name: str) -> dict:
+    display_name = display_name.strip()
+    if not display_name:
+        raise HreError("表示名を入力してください")
+    ws_id = _ws_of(conn, "entities", entity_id)
+    _check_write(actor, ws_id)
+    with conn.transaction():
+        old = _one(conn, """UPDATE hre.entities e SET display_name = %s, updated_at = now()
+                              FROM hre.entities o WHERE e.id = %s AND o.id = e.id
+                          RETURNING o.display_name""", (display_name, entity_id))
+        _audit(conn, actor, ws_id, "update", "entities", entity_id, [entity_id],
+               {"display_name": display_name, "previous": old["display_name"]})
+    return {"id": entity_id, "display_name": display_name}
+
+
+def remove_identifier(conn: Connection, actor: Actor, entity_id: str, scheme: str, value: str) -> dict:
+    ws_id = _ws_of(conn, "entities", entity_id)
+    _check_write(actor, ws_id)
+    with conn.transaction():
+        row = _one(conn, """DELETE FROM hre.entity_identifiers WHERE entity_id = %s AND scheme = %s AND value = %s
+                            RETURNING id""", (entity_id, scheme, value))
+        if row is None:
+            raise HreError(f"{scheme}:{value} は登録されていません")
+        _audit(conn, actor, ws_id, "delete", "entity_identifiers", entity_id, [entity_id], {"scheme": scheme})
+    return {"entity_id": entity_id, "removed": f"{scheme}:{value}"}
+
+
+def list_activity(conn: Connection, actor: Actor, workspace: str | None = None, entity_id: str | None = None,
+                  limit: int = 100) -> list[dict]:
+    """監査ログ（誰が・いつ・何をしたか）。読めるワークスペースの分だけ。"""
+    if workspace:
+        scope = [_resolve_ws(conn, actor, workspace, "read")["id"]]
+    else:
+        scope = list(_readable_ids(conn, actor))
+    if entity_id:
+        _check_read(conn, actor, _ws_of(conn, "entities", entity_id))
+    rows = _q(conn, """
+        SELECT l.id, l.at, l.action, l.target, l.target_id::text, l.detail, w.key AS workspace,
+               a.name AS actor, a.kind AS actor_kind, l.entity_ids::text[] AS entity_ids
+          FROM hre.audit_log l
+          LEFT JOIN hre.workspaces w ON w.id = l.workspace_id
+          LEFT JOIN hre.actors a ON a.id = l.actor_id
+         WHERE (l.workspace_id = ANY(%(ws)s::uuid[]) OR (l.workspace_id IS NULL AND %(admin)s))
+           AND (%(e)s::uuid IS NULL OR %(e)s::uuid = ANY(l.entity_ids))
+         ORDER BY l.at DESC, l.id DESC LIMIT %(limit)s""",
+              {"ws": scope, "admin": actor.is_admin or workspace is None, "e": entity_id, "limit": limit})
+    names = {r["id"]: r["display_name"] for r in _q(
+        conn, "SELECT id::text, display_name FROM hre.entities WHERE id = ANY(%s::uuid[])",
+        (list({i for r in rows for i in r["entity_ids"]}),))}
+    for r in rows:
+        r["entities"] = [{"id": i, "name": names[i]} for i in r["entity_ids"] if i in names]
+    return rows
+
+
+def list_sources(conn: Connection, actor: Actor, workspace: str, limit: int = 100) -> list[dict]:
+    ws = _resolve_ws(conn, actor, workspace, "read")
+    return _q(conn, """SELECT s.id::text, s.kind, s.title, s.uri, s.trusted, s.occurred_at, s.captured_at,
+                              left(s.content, 120) AS preview, a.name AS captured_by
+                         FROM hre.sources s LEFT JOIN hre.actors a ON a.id = s.captured_by
+                        WHERE s.workspace_id = %s ORDER BY s.captured_at DESC LIMIT %s""", (ws["id"], limit))
+
+
+def get_source_detail(conn: Connection, actor: Actor, source_id: str) -> dict:
+    """人が読む用の原文。エージェント向けの get_source と違い、使っている主張も返す。"""
+    s = _one(conn, """SELECT s.id::text, s.workspace_id::text, w.key AS workspace, s.kind, s.uri, s.title, s.content,
+                             s.occurred_at, s.captured_at, s.trusted, a.name AS captured_by
+                        FROM hre.sources s JOIN hre.workspaces w ON w.id = s.workspace_id
+                        LEFT JOIN hre.actors a ON a.id = s.captured_by WHERE s.id = %s""", (source_id,))
+    if s is None:
+        raise HreError(f"出典 {source_id} が見つかりません")
+    _check_read(conn, actor, s["workspace_id"])
+    sensitive_ok = _can_read_sensitive(actor, s["workspace_id"])
+    s["facts"] = [f for f in _q(conn, """
+        SELECT f.id::text AS fact_id, f.field_label, f.value, f.epistemic, f.ai_shareable,
+               coalesce(f.entity_id, r.source_entity_id)::text AS entity_id,
+               (SELECT display_name FROM hre.entities WHERE id = coalesce(f.entity_id, r.source_entity_id)) AS entity_name
+          FROM hre.current_facts f LEFT JOIN hre.relationships r ON r.id = f.relationship_id
+         WHERE f.source_id = %s ORDER BY f.recorded_at""", (source_id,)) if f["ai_shareable"] or sensitive_ok]
+    s["can_write"] = _can_write(actor, s["workspace_id"])
+    del s["workspace_id"]
+    return s
+
+
+def set_source_trusted(conn: Connection, actor: Actor, source_id: str, trusted: bool) -> dict:
+    """出典を信頼できるものとして扱うかを人が決める（人格フィールド等の書き込み可否に効く）。"""
+    if not (actor.is_admin or actor.kind == "human"):
+        raise HreError("出典の信頼を変えられるのは人間か管理者だけです")
+    ws_id = _ws_of(conn, "sources", source_id)
+    _check_write(actor, ws_id)
+    with conn.transaction():
+        conn.execute("UPDATE hre.sources SET trusted = %s WHERE id = %s", (trusted, source_id))
+        _audit(conn, actor, ws_id, "update", "sources", source_id, [], {"trusted": trusted})
+    return {"source_id": source_id, "trusted": trusted}
+
+
+# --- 管理者だけ ---------------------------------------------------------------
+
+def _require_admin(actor: Actor) -> None:
+    if not actor.is_admin:
+        raise HreError("管理者だけが実行できます")
+
+
+def list_all_fields(conn: Connection, actor: Actor) -> list[dict]:
+    _require_admin(actor)
+    return _q(conn, f"""SELECT {_FIELD_COLS}, f.created_at, a.name AS created_by,
+                               (SELECT count(*) FROM hre.facts x WHERE x.field_id = f.id AND x.retracted_at IS NULL)
+                                   AS usage_count,
+                               (SELECT array_agg(alias ORDER BY alias) FROM hre.field_aliases al
+                                 WHERE al.field_id = f.id) AS aliases,
+                               (SELECT key FROM hre.field_definitions m WHERE m.id = f.merged_into_id) AS merged_into
+                          FROM hre.field_definitions f LEFT JOIN hre.actors a ON a.id = f.created_by
+                         ORDER BY f.status = 'proposed' DESC, f.key""")
+
+
+def set_field_status(conn: Connection, actor: Actor, key: str, status: str, merged_into: str | None = None) -> dict:
+    """提案されたフィールドの承認・廃止、または既存フィールドへの統合。"""
+    _require_admin(actor)
+    if status not in ("approved", "deprecated", "merged"):
+        raise HreError(f"status {status!r} は使えません")
+    f = _one(conn, "SELECT id::text, key FROM hre.field_definitions WHERE key = %s", (key,))
+    if f is None:
+        raise HreError(f"フィールド {key!r} が見つかりません")
+    target = None
+    if status == "merged":
+        target = _field(conn, merged_into or "")
+        if target["id"] == f["id"]:
+            raise HreError("自分自身には統合できません")
+    try:
+        with conn.transaction():
+            conn.execute("""UPDATE hre.field_definitions SET status = %s, merged_into_id = %s, updated_at = now()
+                             WHERE id = %s""", (status, target["id"] if target else None, f["id"]))
+            if target:   # 統合元の名前で引いても統合先に解決されるよう、キーを別名として残す
+                conn.execute("""INSERT INTO hre.field_aliases (alias, field_id) VALUES (%s, %s)
+                                ON CONFLICT (alias) DO UPDATE SET field_id = EXCLUDED.field_id""", (f["key"], target["id"]))
+            _audit(conn, actor, None, "set_status", "field_definitions", f["id"], [],
+                   {"key": key, "status": status, "merged_into": target["key"] if target else None})
+    except errors.Error as e:
+        raise _db_error(e) from e
+    return {"key": key, "status": status}
+
+
+def list_actors(conn: Connection, actor: Actor) -> list[dict]:
+    _require_admin(actor)
+    actors = _q(conn, """SELECT a.id::text, a.name, a.kind, a.is_admin, a.created_at, a.revoked_at,
+                                (SELECT max(at) FROM hre.audit_log l WHERE l.actor_id = a.id) AS last_write_at
+                           FROM hre.actors a ORDER BY a.revoked_at IS NOT NULL, a.kind, a.name""")
+    grants = _q(conn, """SELECT g.actor_id::text, w.key, g.scopes FROM hre.workspace_grants g
+                           JOIN hre.workspaces w ON w.id = g.workspace_id ORDER BY w.key""")
+    for a in actors:
+        a["grants"] = [g for g in grants if g["actor_id"] == a["id"]]
+    return actors
+
+
+def list_all_workspaces(conn: Connection, actor: Actor) -> list[dict]:
+    _require_admin(actor)
+    return _q(conn, """SELECT w.key, w.name, w.kind,
+                              (SELECT count(*) FROM hre.entities e WHERE e.workspace_id = w.id
+                                 AND e.merged_into_id IS NULL) AS entity_count,
+                              (SELECT array_agg(r.key ORDER BY r.key) FROM hre.workspace_shares s
+                                 JOIN hre.workspaces r ON r.id = s.reader_workspace_id
+                                WHERE s.workspace_id = w.id) AS shared_with
+                         FROM hre.workspaces w ORDER BY w.kind, w.key""")
+
+
+def revoke_grant(conn: Connection, actor_name: str, workspace_key: str) -> None:
+    conn.execute("""DELETE FROM hre.workspace_grants g USING hre.actors a, hre.workspaces w
+                     WHERE g.actor_id = a.id AND g.workspace_id = w.id AND a.name = %s AND w.key = %s""",
+                 (actor_name, workspace_key))
+
+
+def unshare(conn: Connection, workspace_key: str, reader_key: str) -> None:
+    conn.execute("""DELETE FROM hre.workspace_shares s USING hre.workspaces w, hre.workspaces r
+                     WHERE s.workspace_id = w.id AND s.reader_workspace_id = r.id AND w.key = %s AND r.key = %s""",
+                 (workspace_key, reader_key))
 
 
 # ---------------------------------------------------------------------------

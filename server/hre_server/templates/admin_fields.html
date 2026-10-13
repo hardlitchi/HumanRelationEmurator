@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}フィールドマスター{% endblock %}
+{% block body %}
+<h1>フィールドマスター</h1>
+<p class="muted">エージェントが提案したフィールドを承認するか、既存のフィールドに統合して表記ゆれを防ぎます。提案中のものが上に出ます。</p>
+<ul class="list">
+{% for f in fields %}
+  <li class="{{ 'proposed' if f.status == 'proposed' else '' }}">
+    <div class="row">
+      <span><strong>{{ f.label }}</strong> <code>{{ f.key }}</code>
+        <span class="tag {{ 'warn' if f.status == 'proposed' else '' }}">{{ {'proposed': '提案中', 'approved': '承認済み', 'deprecated': '廃止', 'merged': '統合済み'}[f.status] }}</span>
+        {% if f.requires_trusted_source %}<span class="tag">🔒 人のみ</span>{% endif %}
+        {% if not f.ai_shareable %}<span class="tag warn">AIに渡さない</span>{% endif %}</span>
+      <span class="muted small">使用 {{ f.usage_count }} 件</span>
+    </div>
+    <div class="muted small">{{ f.value_type }}{% if f.enum_options %}（{{ f.enum_options|join(' / ') }}）{% endif %} · {{ f.applies_to|join(', ') }} · {{ f.cardinality }} · {{ f.sensitivity }}
+      {% if f.aliases %} · 別名: {{ f.aliases|join(', ') }}{% endif %}
+      {% if f.merged_into %} · 統合先: {{ f.merged_into }}{% endif %}
+      {% if f.created_by %} · 提案: {{ f.created_by }}{% endif %}</div>
+    {% if f.description %}<div class="small">{{ f.description }}</div>{% endif %}
+    {% if f.status in ('proposed', 'approved') %}
+    <div class="inline">
+      {% if f.status == 'proposed' %}
+      <form method="post" action="/admin/fields/{{ f.key }}"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}">
+        <input type="hidden" name="status" value="approved"><button>承認</button></form>
+      {% endif %}
+      <form method="post" action="/admin/fields/{{ f.key }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}">
+        <input type="hidden" name="status" value="merged">
+        <select name="merged_into">{% for o in fields if o.key != f.key and o.status in ('approved', 'proposed') %}<option value="{{ o.key }}">{{ o.label }} ({{ o.key }})</option>{% endfor %}</select>
+        <button class="secondary" data-confirm="{{ f.label }} を選んだフィールドに統合しますか？">に統合</button></form>
+      <form method="post" action="/admin/fields/{{ f.key }}"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}">
+        <input type="hidden" name="status" value="deprecated"><button class="secondary" data-confirm="廃止すると新しく書けなくなります。よいですか？">廃止</button></form>
+    </div>
+    {% endif %}
+  </li>
+{% endfor %}
+</ul>
+
+<h2>関係の種類</h2>
+<ul class="list">
+{% for t in relation_types %}
+  <li class="row"><span><strong>{{ t.label }}</strong> <code>{{ t.key }}</code>{% if t.requires_trusted_source %} <span class="tag">🔒 人のみ</span>{% endif %}</span>
+    <span class="muted small">{% if t.directed %}{{ t.label }} → {{ t.inverse_label }}{% else %}双方向{% endif %}</span></li>
+{% endfor %}
+</ul>
+{% endblock %}
