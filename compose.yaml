@@ -28,10 +28,8 @@ services:
     environment:
       DATABASE_URL: postgresql://hre:${POSTGRES_PASSWORD}@db:5432/hre
       HRE_PUBLIC_URL: ${HRE_PUBLIC_URL:-https://${HRE_DOMAIN:?.env に HRE_DOMAIN を設定してください}}
-      # ホスト側から localhost:8000 で叩く動作確認も通す
+      # ホスト側から localhost:<HRE_PORT> で叩く動作確認も通す
       HRE_ALLOWED_HOSTS: ${HRE_DOMAIN},localhost:*,127.0.0.1:*
-    ports:
-      - ${HRE_BIND_ADDRESS:-127.0.0.1}:${HRE_MCP_PORT:-8000}:8000
     depends_on:
       db:
         condition: service_healthy
@@ -46,36 +44,25 @@ services:
       HRE_ALLOWED_HOSTS: ${HRE_DOMAIN}
       HRE_TIMEZONE: ${HRE_TIMEZONE:-Asia/Tokyo}
       HRE_INSECURE_COOKIES: ${HRE_INSECURE_COOKIES:-0}
-      # リバースプロキシ（別コンテナ）からの X-Forwarded-Proto を信じる。ポートは 127.0.0.1 にしか出していない
+      # proxy コンテナからの X-Forwarded-Proto を信じる。web 自体はホストにポートを出していない
       FORWARDED_ALLOW_IPS: "*"
-    ports:
-      - ${HRE_BIND_ADDRESS:-127.0.0.1}:${HRE_WEB_PORT:-8001}:8001
     depends_on:
       db:
         condition: service_healthy
       mcp:
         condition: service_started   # イメージのビルドを mcp 側に任せる
 
-  # VPS に Caddy を入れていないときだけ: docker compose --profile caddy up -d
-  caddy:
+  # 外に出すのはこの1ポートだけ。/mcp を mcp へ、それ以外を web へ振り分ける（TLS は外部のリバースプロキシで終端）
+  proxy:
     image: caddy:2
-    profiles: ["caddy"]
     restart: unless-stopped
-    environment:
-      HRE_DOMAIN: ${HRE_DOMAIN}
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - ${HRE_BIND_ADDRESS:-127.0.0.1}:${HRE_PORT:-8080}:8080
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
     depends_on:
       - mcp
       - web
 
 volumes:
   db-data:
-  caddy-data:
-  caddy-config:

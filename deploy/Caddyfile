@@ -1,5 +1,15 @@
-# docker compose --profile caddy up -d で使う。HRE_DOMAIN の証明書を Let's Encrypt から自動で取る
-{$HRE_DOMAIN} {
+# compose の proxy サービス用。TLS は外部のリバースプロキシで終端する前提で、ここは http のまま
+# /mcp を MCP サーバーへ、それ以外を Web UI へ振り分けて、公開ポートを1つにまとめる
+{
+	auto_https off
+	admin off
+	servers {
+		# 外部のリバースプロキシが付けた X-Forwarded-Proto / -For をそのまま渡す
+		trusted_proxies static private_ranges
+	}
+}
+
+:8080 {
 	handle /mcp* {
 		reverse_proxy mcp:8000
 	}
