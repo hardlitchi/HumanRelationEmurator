@@ -9,8 +9,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from psycopg import Connection, errors
@@ -793,6 +795,94 @@ def list_interactions(conn: Connection, actor: Actor, entity_id: str, limit: int
 
 
 # ---------------------------------------------------------------------------
+# 人格コンテキスト（AITuber が台本・セリフ・トークを作るときに渡す、自分の設定と人間関係）
+# ---------------------------------------------------------------------------
+
+#: persona_context で返す関係の上限（強い順。リスナーが増えてもプロンプトが膨らみすぎないように）
+CONTEXT_MAX_RELATIONSHIPS = 30
+
+
+def _context_value(f: dict, names: dict[str, str]) -> str:
+    if f.get("value_entity_id"):
+        return names.get(f["value_entity_id"], f["value_entity_id"])
+    v = f.get("value")
+    if isinstance(v, str):
+        return v
+    return json.dumps(v, ensure_ascii=False)
+
+
+def persona_context(conn: Connection, actor: Actor) -> dict:
+    """この actor の「自分」（書き込めるペルソナのワークスペースの is_self）と、同一人物として
+    つながっている共有ワークスペースのノードの設定・関係をまとめて返す。
+
+    同一人物は entity_links か、共有ワークスペース（読めるもの）で識別子が一致する人。
+    人格フィールドは「自分」と同一人物の主張を合わせ、関係は相手ごとにまとめる。
+    """
+    writable = [ws for ws, s in actor.grants.items() if "write" in s]
+    selves = _q(conn, """SELECT e.id::text, e.display_name, w.key FROM hre.entities e
+                           JOIN hre.workspaces w ON w.id = e.workspace_id
+                          WHERE e.is_self AND e.merged_into_id IS NULL AND e.workspace_id = ANY(%s::uuid[])
+                          ORDER BY w.kind = 'persona' DESC, w.key""", (writable,))
+    if not selves:
+        raise HreError("このトークンには「自分」のノードがありません（hre-admin add-persona で作ります）")
+    me = selves[0]
+    readable = list(_readable_ids(conn, actor))
+    linked = _q(conn, """
+        SELECT DISTINCT e.id::text, e.display_name, w.key FROM hre.entities e
+          JOIN hre.workspaces w ON w.id = e.workspace_id
+         WHERE e.id <> %(me)s AND e.merged_into_id IS NULL AND e.kind = 'person'
+           AND e.workspace_id = ANY(%(ws)s::uuid[])
+           AND (EXISTS (SELECT 1 FROM hre.entity_links l
+                         WHERE (l.entity_a = %(me)s AND l.entity_b = e.id) OR (l.entity_b = %(me)s AND l.entity_a = e.id))
+                OR EXISTS (SELECT 1 FROM hre.entity_identifiers a JOIN hre.entity_identifiers b
+                             ON a.scheme = b.scheme AND a.value = b.value
+                            WHERE a.entity_id = %(me)s AND b.entity_id = e.id))
+         ORDER BY w.key""", {"me": me["id"], "ws": readable})
+    ids = [me["id"]] + [r["id"] for r in linked]
+
+    cards = [get_entity(conn, actor, i) for i in ids]
+    ref_ids = {f["value_entity_id"] for c in cards for f in c["facts"] if f.get("value_entity_id")}
+    names = {r["id"]: r["display_name"] for r in _q(
+        conn, "SELECT id::text, display_name FROM hre.entities WHERE id = ANY(%s::uuid[])", (list(ref_ids),))}
+
+    profile: dict[str, dict] = {}
+    for card in cards:
+        for f in card["facts"]:
+            item = profile.setdefault(f["field_key"], {"key": f["field_key"], "label": f["field_label"],
+                                                       "values": []})
+            value = _context_value(f, names)
+            # cardinality = one は最初の 1 件（get_entity の並びで本人談・確度の高いもの）だけ
+            if value and value not in item["values"] and (f.get("cardinality") != "one" or not item["values"]):
+                item["values"].append(value)
+
+    rels: dict[str, dict] = {}
+    for card in cards:
+        for edge in card["relationships"]:
+            if edge["other_id"] in ids:
+                continue
+            rel = rels.setdefault(edge["other_id"], {
+                "other_id": edge["other_id"], "other_name": edge["other_name"], "other_kind": edge["other_kind"],
+                "relation": edge["relation_type"], "relation_label": edge["label"], "facts": [], "strength": None})
+            if edge["relation_type"] != rel["relation"] and edge["label"] not in rel["relation_label"].split("・"):
+                rel["relation_label"] += "・" + edge["label"]
+            for f in edge["facts"]:
+                fact = {"key": f["field_key"], "label": f["field_label"], "value": _context_value(f, names)}
+                if fact["value"] and fact not in rel["facts"]:
+                    rel["facts"].append(fact)
+            s = (edge.get("strength") or {}).get("strength")
+            if s is not None and (rel["strength"] is None or s > rel["strength"]):
+                rel["strength"] = s
+    relationships = sorted(rels.values(), key=lambda r: (-(r["strength"] or 0), -len(r["facts"]), r["other_name"]))
+    return {
+        "self": {"id": me["id"], "name": me["display_name"], "workspace": me["key"]},
+        "linked": [{"id": r["id"], "name": r["display_name"], "workspace": r["key"]} for r in linked],
+        "profile": [p for p in profile.values() if p["values"]],
+        "relationships": relationships[:CONTEXT_MAX_RELATIONSHIPS],
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 人が参照・編集するための操作（Web UI から使う）
 # ---------------------------------------------------------------------------
 
@@ -1012,6 +1102,39 @@ def create_actor(conn: Connection, name: str, kind: str, is_admin: bool = False)
                              VALUES (%s, %s, %s, %s) RETURNING id::text""",
                     (kind, name, hash_token(token), is_admin))["id"]
     return actor_id, token
+
+
+def add_persona(conn: Connection, key: str, display_name: str, group: str | None = None,
+                actor_name: str | None = None) -> tuple[str, str]:
+    """AITuber 1 人分をまとめて作る: ペルソナのワークスペース、その「自分」ノード（識別子 name:<表示名>）、
+    読み書きできるエージェント（トークンを返す）、グループ共有の閲覧。
+
+    「自分」は共有ワークスペースで同じ識別子を持つ人と同一人物として persona_context にまとまる。
+    エージェント名の既定は <key>-agent。すでにあるものは作り直さないが、トークンは毎回発行し直す。
+    """
+    actor_name = actor_name or f"{key}-agent"
+    with conn.transaction():
+        ws = _one(conn, "SELECT id::text, kind FROM hre.workspaces WHERE key = %s", (key,))
+        if ws is None:
+            ws = {"id": create_workspace(conn, key, display_name, "persona"), "kind": "persona"}
+        elif ws["kind"] != "persona":
+            raise HreError(f"workspace {key!r} は persona ではありません（{ws['kind']}）")
+        if group:
+            if not _one(conn, "SELECT 1 AS x FROM hre.workspaces WHERE key = %s AND kind = 'shared'", (group,)):
+                raise HreError(f"共有ワークスペース {group!r} がありません（create-workspace {group} <名前> shared）")
+            share(conn, group, key)
+        self_row = _one(conn, "SELECT id::text FROM hre.entities WHERE workspace_id = %s AND is_self", (ws["id"],))
+        if self_row is None:
+            self_row = _one(conn, """INSERT INTO hre.entities (workspace_id, kind, display_name, is_self)
+                                     VALUES (%s, 'person', %s, true) RETURNING id::text""", (ws["id"], display_name))
+            conn.execute("""INSERT INTO hre.entity_identifiers (workspace_id, entity_id, scheme, value)
+                            VALUES (%s, %s, 'name', %s)""", (ws["id"], self_row["id"], display_name))
+        if _one(conn, "SELECT 1 AS x FROM hre.actors WHERE name = %s", (actor_name,)):
+            token = rotate_token(conn, actor_name)
+        else:
+            _, token = create_actor(conn, actor_name, "agent")
+        grant(conn, actor_name, key, ["read", "write"])
+    return self_row["id"], token
 
 
 def has_admin(conn: Connection) -> bool:

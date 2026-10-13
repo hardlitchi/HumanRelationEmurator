@@ -6,6 +6,7 @@
   python -m hre_server.admin create-actor aituber-a-agent agent        # トークンは1度だけ表示
   python -m hre_server.admin grant aituber-a-agent aituber-a read,write
   python -m hre_server.admin share group aituber-a                     # aituber-a から group を読めるようにする
+  python -m hre_server.admin add-persona rio "秋霞莉央" --group fuyuakinatsuharu   # 上の 4 つを 1 人分まとめて
 """
 
 from __future__ import annotations
@@ -46,6 +47,11 @@ def main() -> None:
     s = sub.add_parser("share")
     s.add_argument("workspace", help="共有される側（例: group）")
     s.add_argument("reader", help="読む側（例: aituber-a）")
+    pa = sub.add_parser("add-persona", help="AITuber 1 人分のワークスペース・「自分」・エージェントを作り、トークンを表示する")
+    pa.add_argument("key", help="ワークスペースのキー（例: rio）")
+    pa.add_argument("name", help="キャラの名前（共有ワークスペースの同じ名前の人と同一人物になる）")
+    pa.add_argument("--group", help="読めるようにする共有ワークスペース（例: fuyuakinatsuharu）")
+    pa.add_argument("--actor", help="エージェント名（既定: <key>-agent）")
     args = p.parse_args()
 
     with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
@@ -77,6 +83,12 @@ def main() -> None:
             case "share":
                 service.share(conn, args.workspace, args.reader)
                 print(f"{args.reader} can now read {args.workspace}")
+            case "add-persona":
+                try:
+                    _, token = service.add_persona(conn, args.key, args.name, args.group, args.actor)
+                except service.HreError as e:
+                    raise SystemExit(str(e))
+                print(f"persona {args.key}（{args.name}）ready. token (shown once):\n{token}")
 
 
 if __name__ == "__main__":
