@@ -334,14 +334,16 @@ CREATE INDEX audit_log_entity_ids ON audit_log USING gin (entity_ids);
 
 -- フィールド名・関係名の揺れを吸収するための正規化（全角→半角、小文字、区切り統一）
 CREATE FUNCTION normalize_label(t text) RETURNS text
-LANGUAGE sql IMMUTABLE AS $$
+LANGUAGE sql IMMUTABLE
+SET search_path = hre, public AS $$
     SELECT trim(both '_' FROM
            regexp_replace(lower(normalize(t, NFKC)), '[\s\-\.・/]+', '_', 'g'))
 $$;
 
--- 入力文字列 → 使うべきフィールド。merged なら統合先まで辿る。見つからなければ NULL。
+-- 入力文字列（キー・別名・表示名）→ 使うべきフィールド。merged なら統合先まで辿る。見つからなければ NULL。
 CREATE FUNCTION resolve_field(name text) RETURNS field_definitions
-LANGUAGE plpgsql STABLE AS $$
+LANGUAGE plpgsql STABLE
+SET search_path = hre, public AS $$
 DECLARE
     f field_definitions;
 BEGIN
@@ -349,6 +351,11 @@ BEGIN
     IF NOT FOUND THEN
         SELECT fd.* INTO f FROM field_aliases a JOIN field_definitions fd ON fd.id = a.field_id
         WHERE a.alias = normalize_label(name);
+    END IF;
+    IF NOT FOUND THEN   -- 表示名そのものでも引ける（統合済みは除く）
+        SELECT * INTO f FROM field_definitions
+         WHERE normalize_label(label) = normalize_label(name) AND status <> 'merged'
+         ORDER BY status = 'approved' DESC LIMIT 1;
     END IF;
     WHILE FOUND AND f.status = 'merged' LOOP
         SELECT * INTO f FROM field_definitions WHERE id = f.merged_into_id;
@@ -360,7 +367,8 @@ END $$;
 -- 未登録の名前に近い既存フィールドの候補（エージェントが新規作成する前に必ず呼ぶ）
 CREATE FUNCTION suggest_fields(name text, max_results int DEFAULT 5)
 RETURNS TABLE (key text, label text, matched text, score real)
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE
+SET search_path = hre, public AS $$
     SELECT DISTINCT ON (fd.key) fd.key, fd.label, c.matched, c.score
     FROM (
         SELECT id AS field_id, key AS matched, similarity(key, normalize_label(name)) AS score
@@ -378,14 +386,16 @@ $$;
 
 -- 人が書いたか、信頼できる出典に基づく書き込みか
 CREATE FUNCTION is_trusted_write(recorded_by uuid, source_id uuid) RETURNS boolean
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE
+SET search_path = hre, public AS $$
     SELECT coalesce((SELECT kind = 'human' FROM actors WHERE id = recorded_by), false)
         OR coalesce((SELECT trusted FROM sources WHERE id = source_id), false)
 $$;
 
 -- facts の整合性チェック（型・適用対象・状態・機微情報の推測禁止）
 CREATE FUNCTION check_fact() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql
+SET search_path = hre, public AS $$
 DECLARE
     f field_definitions;
     subject_kind text;
@@ -448,7 +458,8 @@ CREATE TRIGGER facts_check BEFORE INSERT OR UPDATE OF field_id, value, value_ent
 
 -- 関係の両端の種類チェック
 CREATE FUNCTION check_relationship() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql
+SET search_path = hre, public AS $$
 DECLARE
     rt relation_types;
     sk text;
@@ -474,7 +485,8 @@ CREATE TRIGGER relationships_check BEFORE INSERT OR UPDATE
 
 -- 同一人物の統合: from の記録をすべて into に付け替え、from は merged として残す
 CREATE FUNCTION merge_entities(from_id uuid, into_id uuid, by_actor uuid) RETURNS void
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql
+SET search_path = hre, public AS $$
 BEGIN
     IF from_id = into_id THEN RAISE EXCEPTION 'cannot merge an entity into itself'; END IF;
     IF (SELECT workspace_id FROM entities WHERE id = from_id)
@@ -513,7 +525,8 @@ END $$;
 -- その人の記録からしか参照されなくなった出典の原文も消す。
 -- include_linked = true なら entity_links でつながった他ワークスペースの同一人物もまとめて消す。
 CREATE FUNCTION erase_entity(target uuid, include_linked boolean DEFAULT false) RETURNS void
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql
+SET search_path = hre, public AS $$
 DECLARE
     ids uuid[];
     src uuid[];

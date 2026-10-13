@@ -1,4 +1,4 @@
-name: db
+name: ci
 
 on:
   push:
@@ -28,3 +28,28 @@ jobs:
           psql -v ON_ERROR_STOP=1 -q -d hre_test -f db/seed.sql
       - name: Smoke test
         run: psql -v ON_ERROR_STOP=1 -q -d hre_test -f db/tests/smoke.sql
+
+  server:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[test]"
+      - name: Test
+        env:
+          HRE_TEST_ADMIN_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: pytest -q
