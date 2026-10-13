@@ -72,7 +72,7 @@ HRE_ALLOWED_HOSTS=hre.example.com hre-web --host 127.0.0.1 --port 8001
 
 時刻は `HRE_TIMEZONE`（既定 `Asia/Tokyo`）で表示する。
 
-手元で http のまま試すときは `--insecure-cookies` を付ける（Secure 属性を外す）。
+手元で http のまま試すときは `--insecure-cookies` を付ける（Secure 属性を外す。`HRE_INSECURE_COOKIES=1` でも同じ）。
 
 ### VPS で MCP サーバーと同じドメインに置く例（Caddy）
 

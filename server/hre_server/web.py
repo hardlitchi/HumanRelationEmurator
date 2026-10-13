@@ -577,7 +577,8 @@ def main() -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8001)
     p.add_argument("--insecure-cookies", action="store_true",
-                   help="Cookie に Secure を付けない（http://localhost で試すときだけ）")
+                   default=os.environ.get("HRE_INSECURE_COOKIES") == "1",
+                   help="Cookie に Secure を付けない（http://localhost で試すときだけ。HRE_INSECURE_COOKIES=1 でも同じ）")
     args = p.parse_args()
     secret = os.environ.get("HRE_WEB_SECRET")
     if not secret:

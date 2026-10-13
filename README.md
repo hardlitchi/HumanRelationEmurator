@@ -14,6 +14,16 @@
 - [データモデル](docs/data-model.md)
 - [エージェント用 MCP サーバー](docs/mcp-server.md)
 - [人と管理者のための Web UI](docs/web-ui.md)
+- [docker compose で動かす](docs/docker.md)
+
+## docker compose で起動する
+
+```sh
+cp .env.example .env   # パスワード・署名鍵・ドメインを埋める（生成方法はファイル内に記載）
+docker compose up -d --build
+```
+
+詳しくは [docs/docker.md](docs/docker.md)。
 
 ## データベース
 
