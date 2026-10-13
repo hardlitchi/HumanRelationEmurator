@@ -25,6 +25,42 @@ docker compose up -d --build
 
 詳しくは [docs/docker.md](docs/docker.md)。
 
+## claude.ai から使う
+
+claude.ai（Web・スマホアプリ・デスクトップアプリ）の「カスタムコネクタ」に MCP サーバーを登録すると、チャットから人間関係グラフを読み書きできる。claude.ai のサーバーがインターネット越しに `https://<HRE_DOMAIN>/mcp` へ接続するので、外部のリバースプロキシで HTTPS 公開済みであることが前提。
+
+接続は OAuth で行う。claude.ai が接続を始めるとこのサーバーの認可画面が開き、そこに `hre_` トークンを入力すると、そのトークンの持ち主として読み書きできるようになる。
+
+### 1. claude.ai 用のトークンを作る
+
+Web UI の「アクセス管理」で claude.ai 用のエージェントを追加してトークン（`hre_...`）を発行し、使わせたいワークスペースに `read`（書かせるなら `write` も）を付ける。コマンドで作るなら:
+
+```sh
+docker compose exec mcp hre-admin create-actor claude-ai agent   # トークンが1度だけ表示される
+docker compose exec mcp hre-admin grant claude-ai owner read,write
+```
+
+claude.ai 専用に分けておくと、記録者（`recorded_by`）で claude.ai から書いた内容を見分けられ、そのトークンだけ無効にもできる。
+
+### 2. カスタムコネクタを追加する
+
+1. claude.ai で **Customize > Connectors** を開き、**Add custom connector** を押す（Team / Enterprise プランでは Owner が **Organization settings > Connectors** から追加する）
+2. **MCP server URL** に `https://<HRE_DOMAIN>/mcp`
+3. 認証の選択肢が出る場合は **Sign in now**、OAuth クライアントは **Register automatically** を選ぶ（OAuth Client ID / Secret の欄は空のまま）
+4. **Add** で保存し、**Connect** を押す
+5. 開いた「HumanRelationEmurator への接続」画面で、1 のトークンを入力して **接続を許可する**
+
+### 3. チャットで使う
+
+チャットの **+ > Connectors** で有効にして、「〇〇さんについて覚えていることを教えて」「今日の配信で△△さんと話した内容を記録して」のように頼む。スマホの Claude アプリでも、同じアカウントで追加したコネクタがそのまま使える。
+
+書き込み系のツールは毎回の承認を残しておくのがおすすめ（**Always allow** にしない）。人格フィールドや trusted な出典はエージェントからは書けないので、claude.ai から人格が書き換わることはない。
+
+### 接続を切る・やり直す
+
+- 1 のトークンを Web UI か `hre-admin rotate-token claude-ai` で再発行・無効化すると、claude.ai からの接続もすぐ使えなくなる。つなぎ直すときは claude.ai のコネクタでもう一度 **Connect** して新しいトークンを入れる
+- 認可画面で別のトークンを入れれば、そのトークンの持ち主（別の AITuber など）として接続できる
+
 ## データベース
 
 PostgreSQL 16 以上。
