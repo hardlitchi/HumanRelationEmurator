@@ -4,7 +4,7 @@
 {% block body %}
 <p class="crumbs"><a href="/">ワークスペース</a> /</p>
 <h1>{{ ws.key }} <span class="tag">{{ WS_KINDS[ws.kind] }}</span></h1>
-<p class="links small"><a href="/w/{{ ws.key }}/sources">出典（原文）</a> · <a href="/activity?workspace={{ ws.key }}">このワークスペースの更新履歴</a></p>
+<p class="links small"><a href="/w/{{ ws.key }}/clusters">グループ（推定）</a> · <a href="/w/{{ ws.key }}/sources">出典（原文）</a> · <a href="/activity?workspace={{ ws.key }}">このワークスペースの更新履歴</a></p>
 
 <form method="get" class="search">
   <input type="search" name="q" value="{{ q }}" placeholder="名前・SNSハンドルで探す">

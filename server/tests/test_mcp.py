@@ -67,7 +67,7 @@ def test_agent_works_through_mcp(server_url, world, conn):
     async def run():
         async with _client(server_url, world.tokens["agent-a"]) as c:
             tools = {t.name for t in (await c.list_tools()).tools}
-            assert {"find_entities", "record_fact", "resolve_field", "record_interaction"} <= tools
+            assert {"find_entities", "record_fact", "resolve_field", "record_interaction", "list_clusters"} <= tools
 
             ws = _data(await c.call_tool("list_workspaces", {}))["workspaces"]
             assert {w["key"] for w in ws} == {world.a, world.group}
