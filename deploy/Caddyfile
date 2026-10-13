@@ -1,0 +1,12 @@
+# docker compose --profile caddy up -d で使う。HRE_DOMAIN の証明書を Let's Encrypt から自動で取る
+{$HRE_DOMAIN} {
+	handle /mcp* {
+		reverse_proxy mcp:8000
+	}
+	handle /.well-known/oauth-* {
+		reverse_proxy mcp:8000
+	}
+	handle {
+		reverse_proxy web:8001
+	}
+}

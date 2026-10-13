@@ -1,0 +1,81 @@
+# 使い方は docs/docker.md。設定は .env（.env.example をコピーして作る）
+name: hre
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hre
+      POSTGRES_USER: hre
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?.env に POSTGRES_PASSWORD を設定してください}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # 初回（ボリュームが空のとき）だけ実行される。hre-admin init-db は不要
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hre -d hre"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  mcp:
+    build: .
+    image: hre-server:local
+    restart: unless-stopped
+    command: ["hre-mcp", "--http", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATABASE_URL: postgresql://hre:${POSTGRES_PASSWORD}@db:5432/hre
+      HRE_PUBLIC_URL: ${HRE_PUBLIC_URL:-https://${HRE_DOMAIN:?.env に HRE_DOMAIN を設定してください}}
+      # ホスト側から localhost:8000 で叩く動作確認も通す
+      HRE_ALLOWED_HOSTS: ${HRE_DOMAIN},localhost:*,127.0.0.1:*
+    ports:
+      - ${HRE_BIND_ADDRESS:-127.0.0.1}:${HRE_MCP_PORT:-8000}:8000
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    image: hre-server:local
+    restart: unless-stopped
+    command: ["hre-web", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      DATABASE_URL: postgresql://hre:${POSTGRES_PASSWORD}@db:5432/hre
+      HRE_WEB_SECRET: ${HRE_WEB_SECRET:?.env に HRE_WEB_SECRET を設定してください}
+      HRE_ALLOWED_HOSTS: ${HRE_DOMAIN}
+      HRE_TIMEZONE: ${HRE_TIMEZONE:-Asia/Tokyo}
+      HRE_INSECURE_COOKIES: ${HRE_INSECURE_COOKIES:-0}
+      # リバースプロキシ（別コンテナ）からの X-Forwarded-Proto を信じる。ポートは 127.0.0.1 にしか出していない
+      FORWARDED_ALLOW_IPS: "*"
+    ports:
+      - ${HRE_BIND_ADDRESS:-127.0.0.1}:${HRE_WEB_PORT:-8001}:8001
+    depends_on:
+      db:
+        condition: service_healthy
+      mcp:
+        condition: service_started   # イメージのビルドを mcp 側に任せる
+
+  # VPS に Caddy を入れていないときだけ: docker compose --profile caddy up -d
+  caddy:
+    image: caddy:2
+    profiles: ["caddy"]
+    restart: unless-stopped
+    environment:
+      HRE_DOMAIN: ${HRE_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - mcp
+      - web
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:
