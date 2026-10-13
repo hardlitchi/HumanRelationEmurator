@@ -90,3 +90,14 @@ def test_persona_context_http(server_url, conn, world):
     r = httpx2.get(url, headers={"Authorization": f"Bearer {world.tokens['agent-a']}"})
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
     assert r.json()["self"]["name"] == "莉央"
+
+
+def test_enum_accepts_numbers_from_mcp_clients(conn, world):
+    a = service.create_entity(conn, world.admin, "person", "甲", world.group)["id"]
+    b = service.create_entity(conn, world.admin, "person", "乙", world.group)["id"]
+    rel = service.add_relationship(conn, world.admin, "colleague", a, b)["relationship_id"]
+    service.record_fact(conn, world.admin, "親しさ", 5, "observed", relationship_id=rel)
+    facts = service.get_entity(conn, world.admin, a)["relationships"][0]["facts"]
+    assert [f["value"] for f in facts if f["field_key"] == "closeness_rating"] == ["5"]
+    with pytest.raises(HreError, match="enum"):
+        service.record_fact(conn, world.admin, "親しさ", 6, "observed", relationship_id=rel)
