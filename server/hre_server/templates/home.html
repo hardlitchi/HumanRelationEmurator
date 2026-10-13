@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}ワークスペース{% endblock %}
+{% block body %}
+<h1>ワークスペース</h1>
+<p class="muted">ワークスペースは「誰の視点の人間関係か」の単位です。</p>
+{% if not workspaces %}
+<p class="card">閲覧できるワークスペースがありません。管理者に権限を付けてもらってください。</p>
+{% endif %}
+<ul class="list">
+{% for w in workspaces %}
+  <li>
+    <a href="/w/{{ w.key }}" class="row">
+      <span><strong>{{ w.name }}</strong> <span class="tag">{{ WS_KINDS[w.kind] }}</span></span>
+      <span class="muted small">{% for s in w.access %}{{ SCOPES.get(s, s) }}{% if not loop.last %}・{% endif %}{% endfor %}</span>
+    </a>
+  </li>
+{% endfor %}
+</ul>
+{% endblock %}

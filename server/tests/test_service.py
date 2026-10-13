@@ -158,3 +158,47 @@ def test_erase_is_admin_only_and_audited(conn, world):
     service.erase_entity(conn, world.admin, x)
     assert conn.execute("SELECT count(*) FROM hre.entities WHERE id = %s", (x,)).fetchone()[0] == 0
     assert conn.execute("SELECT count(*) FROM hre.audit_log WHERE %s = ANY(entity_ids)", (x,)).fetchone()[0] == 0
+
+
+def test_tie_strength_from_interactions_and_rating(conn, world):
+    import math
+    from datetime import datetime, timedelta, timezone
+
+    me = service.create_entity(conn, world.agent_a, "person", "AITuber A", world.a, is_self=True)["id"]
+    x = service.create_entity(conn, world.agent_a, "person", "コアリスナー", world.a)["id"]
+    y = service.create_entity(conn, world.agent_a, "person", "たまに来る人", world.a)["id"]
+    z = service.create_entity(conn, world.agent_a, "person", "話題に出ただけ", world.a)["id"]
+    now = datetime.now(timezone.utc)
+    for _ in range(3):   # 今日、深さ2、X から話しかけた
+        service.record_interaction(conn, world.agent_a, now.isoformat(), "stream_chat",
+                                   [{"entity_id": x, "role": "initiator"}, {"entity_id": me, "role": "participant"},
+                                    {"entity_id": z, "role": "mentioned"}], depth=2)
+    service.record_interaction(conn, world.agent_a, (now - timedelta(days=90)).isoformat(), "chat",
+                               [{"entity_id": y}, {"entity_id": me}])
+
+    ties = {t["other_id"]: t for t in service.get_entity(conn, world.agent_a, me)["ties"]}
+    assert z not in ties                          # mentioned はやり取りに数えない
+    # X: 合計 6 → 1 − e^(−6/5)、一方的なので互恵性 0 → × 0.7
+    assert ties[x]["derived_strength"] == round((1 - math.exp(-6 / 5)) * 0.7, 2)
+    assert ties[x]["reciprocity"] == 0 and ties[x]["interaction_count"] == 3
+    # Y: 90日前の深さ1（未記録）→ e^(−1)、initiator 未記録なので互恵性の減点なし
+    assert ties[y]["derived_strength"] == round(1 - math.exp(-math.exp(-1) / 5), 2)
+    assert list(ties) == [x, y]                   # 強い順
+
+    # 親しさ（主観）を付けると、表示用の強さは算出値との平均になり、すぐ反映される
+    rel = service.add_relationship(conn, world.agent_a, "listener_of", x, me)["relationship_id"]
+    service.record_fact(conn, world.agent_a, "親しさ", "5", "observed", relationship_id=rel)
+    card = service.get_entity(conn, world.agent_a, me)
+    t = next(t for t in card["ties"] if t["other_id"] == x)
+    assert t["manual_strength"] == 1.0
+    assert t["strength"] == round((round((1 - math.exp(-6 / 5)) * 0.7, 4) + 1) / 2, 2)
+    assert card["relationships"][0]["strength"]["manual_strength"] == 1.0
+
+    # 関係だけでやり取りのない相手も 0 で出る。共通の知人も数える
+    service.add_relationship(conn, world.agent_a, "friend", x, y)
+    t = {t["other_id"]: t for t in service.get_entity(conn, world.agent_a, x)["ties"]}
+    assert t[y]["derived_strength"] == 0 and t[y]["common_neighbors"] == 1   # 共通の知人は AITuber A
+
+    # 古い計算結果は残さない
+    assert conn.execute("SELECT count(*) FROM hre.analysis_runs r JOIN hre.workspaces w ON w.id = r.workspace_id "
+                        "WHERE w.key = %s", (world.a,)).fetchone()[0] == 1

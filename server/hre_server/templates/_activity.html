@@ -1,0 +1,15 @@
+<ul class="list activity">
+{% for r in rows %}
+  <li>
+    <span class="muted small">{{ r.at|dt }}{% if r.workspace %} · {{ r.workspace }}{% endif %} ·
+      <span class="tag {{ 'agent' if r.actor_kind == 'agent' else '' }}">{{ r.actor or '(削除済み)' }}</span></span>
+    <span>{{ TARGETS.get(r.target, r.target) }}を{{ ACTIONS.get(r.action, r.action) }}
+      {% if r.detail %}<span class="small muted">{% for k, v in r.detail.items() if v is not none %}{{ k }}={{ v|fmt_value }} {% endfor %}</span>{% endif %}
+      {% for e in r.entities %}<a href="/e/{{ e.id }}">{{ e.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+      {% if r.target == 'sources' and r.target_id %}<a href="/s/{{ r.target_id }}">原文</a>{% endif %}
+    </span>
+  </li>
+{% else %}
+  <li class="muted">まだありません</li>
+{% endfor %}
+</ul>

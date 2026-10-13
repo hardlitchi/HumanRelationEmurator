@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}出典 · {{ ws.key }}{% endblock %}
+{% block body %}
+<p class="crumbs"><a href="/">ワークスペース</a> / <a href="/w/{{ ws.key }}">{{ ws.key }}</a> /</p>
+<h1>出典（原文）</h1>
+<p class="muted">エージェントが取り込んだ会話・配信コメントなど。新しい順に100件。</p>
+<ul class="list">
+{% for s in sources %}
+  <li><a href="/s/{{ s.id }}" class="row col">
+    <span><span class="tag">{{ s.kind }}</span>{% if s.trusted %} <span class="tag trusted">信頼済み</span>{% endif %}
+      <strong>{{ s.title or '' }}</strong></span>
+    <span class="small">{{ s.preview or s.uri or '' }}</span>
+    <span class="muted small">{{ s.captured_at|dt }} · {{ s.captured_by or '' }}</span>
+  </a></li>
+{% else %}
+  <li class="muted">まだありません</li>
+{% endfor %}
+</ul>
+{% endblock %}

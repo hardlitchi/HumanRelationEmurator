@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}更新履歴{% endblock %}
+{% block body %}
+<h1>更新履歴{% if workspace %} <span class="tag">{{ workspace }}</span>{% endif %}</h1>
+<p class="muted">エージェントと人が何を記録したか。新しい順に200件。</p>
+{% include "_activity.html" %}
+{% endblock %}

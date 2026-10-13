@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}アクセス管理{% endblock %}
+{% block body %}
+<h1>アクセス管理</h1>
+
+{% if new_token %}
+<section class="card token">
+  <h2>{{ new_token.name }} のトークン</h2>
+  <p>この画面を離れると二度と表示されません。エージェントの設定か、本人に安全な方法で渡してください。</p>
+  <input readonly value="{{ new_token.token }}" class="mono" data-select>
+</section>
+{% endif %}
+
+<h2>利用者・エージェント</h2>
+<ul class="list">
+{% for a in actors %}
+  <li class="{{ 'dim' if a.revoked_at else '' }}">
+    <div class="row">
+      <span><strong>{{ a.name }}</strong> <span class="tag {{ 'agent' if a.kind == 'agent' else '' }}">{{ a.kind }}</span>
+        {% if a.is_admin %}<span class="tag warn">管理者</span>{% endif %}
+        {% if a.revoked_at %}<span class="tag">無効</span>{% endif %}</span>
+      <span class="muted small">最終書き込み {{ a.last_write_at|dt or 'なし' }}</span>
+    </div>
+    <div class="small">{% for g in a.grants %}<span class="tag">{{ g.key }}: {% for s in g.scopes %}{{ SCOPES[s] }}{% if not loop.last %}・{% endif %}{% endfor %}</span> {% else %}<span class="muted">権限なし</span>{% endfor %}</div>
+    <details>
+      <summary class="small">権限・トークン</summary>
+      <form method="post" action="/admin/access" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}"><input type="hidden" name="op" value="grant">
+        <input type="hidden" name="name" value="{{ a.name }}">
+        <select name="workspace">{% for w in workspaces %}<option value="{{ w.key }}">{{ w.key }}</option>{% endfor %}</select>
+        <label><input type="checkbox" name="read" checked> 閲覧</label>
+        <label><input type="checkbox" name="write"> 編集</label>
+        <label><input type="checkbox" name="sensitive_read"> 機微情報</label>
+        <button class="secondary">設定（全部外すと権限削除）</button>
+      </form>
+      <div class="inline">
+        <form method="post" action="/admin/access"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}">
+          <input type="hidden" name="op" value="rotate"><input type="hidden" name="name" value="{{ a.name }}">
+          <button class="secondary" data-confirm="トークンを再発行すると古いトークンは使えなくなります。よいですか？">{{ '有効にして再発行' if a.revoked_at else 'トークン再発行' }}</button></form>
+        {% if not a.revoked_at and a.name != me.name %}
+        <form method="post" action="/admin/access"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}">
+          <input type="hidden" name="op" value="revoke"><input type="hidden" name="name" value="{{ a.name }}">
+          <button class="danger" data-confirm="{{ a.name }} を無効にしますか？">無効にする</button></form>
+        {% endif %}
+      </div>
+    </details>
+  </li>
+{% endfor %}
+</ul>
+<details class="card">
+  <summary>利用者・エージェントを追加</summary>
+  <form method="post" action="/admin/access" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}"><input type="hidden" name="op" value="create_actor">
+    <label>名前 <input name="name" required placeholder="aituber-a-agent"></label>
+    <label>種類 <select name="kind"><option value="human">人（Web UI でログイン）</option><option value="agent">エージェント（MCP）</option><option value="importer">取り込みツール</option></select></label>
+    <label><input type="checkbox" name="is_admin"> 管理者にする</label>
+    <button>追加してトークンを発行</button>
+  </form>
+</details>
+
+<h2>ワークスペース</h2>
+<ul class="list">
+{% for w in workspaces %}
+  <li>
+    <div class="row"><span><a href="/w/{{ w.key }}"><strong>{{ w.name }}</strong></a> <code>{{ w.key }}</code> <span class="tag">{{ WS_KINDS[w.kind] }}</span></span>
+      <span class="muted small">{{ w.entity_count }} 件</span></div>
+    {% if w.shared_with %}<div class="small">共有先: {% for r in w.shared_with %}
+      <form method="post" action="/admin/access" class="chip-x"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}">
+        <input type="hidden" name="op" value="unshare"><input type="hidden" name="workspace" value="{{ w.key }}"><input type="hidden" name="reader" value="{{ r }}">
+        <span class="tag">{{ r }} <button class="link" aria-label="共有解除" data-confirm="{{ r }} への共有を解除しますか？">×</button></span></form>
+      {% endfor %}</div>{% endif %}
+  </li>
+{% endfor %}
+</ul>
+<details class="card">
+  <summary>ワークスペースを追加・共有</summary>
+  <form method="post" action="/admin/access" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}"><input type="hidden" name="op" value="create_workspace">
+    <label>キー（英小文字） <input name="key" required pattern="[a-z][a-z0-9_\-]*" placeholder="aituber-a"></label>
+    <label>名前 <input name="name" required></label>
+    <label>種類 <select name="kind">{% for k, label in WS_KINDS.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></label>
+    <button>作成</button>
+  </form>
+  <form method="post" action="/admin/access" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}"><input type="hidden" name="op" value="share">
+    <select name="workspace">{% for w in workspaces %}<option value="{{ w.key }}">{{ w.key }}</option>{% endfor %}</select>
+    を
+    <select name="reader">{% for w in workspaces %}<option value="{{ w.key }}">{{ w.key }}</option>{% endfor %}</select>
+    から読めるようにする <button class="secondary">共有</button>
+  </form>
+</details>
+{% endblock %}

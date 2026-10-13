@@ -1,0 +1,10 @@
+{# 関係の強さ（0〜100）。t: strength / derived_strength / manual_strength / interaction_count を持つ dict #}
+{% macro meter(t, detail=true) %}
+{% if t %}
+<span class="meter" title="算出 {{ t.derived_strength|pct }} / 親しさ {{ t.manual_strength|pct }}">
+  <meter min="0" max="100" low="34" high="67" optimum="100" value="{{ t.strength|pct }}"></meter>
+  <span class="num">{{ t.strength|pct }}</span>
+  {% if detail %}<span class="muted small">算出 {{ t.derived_strength|pct }} · 親しさ {{ t.manual_strength|pct }} · やり取り {{ t.interaction_count }}回</span>{% endif %}
+</span>
+{% endif %}
+{% endmacro %}

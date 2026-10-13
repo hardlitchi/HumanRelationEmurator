@@ -13,6 +13,7 @@
 - [要求の妥当性検証](docs/requirements-validation.md)
 - [データモデル](docs/data-model.md)
 - [エージェント用 MCP サーバー](docs/mcp-server.md)
+- [人と管理者のための Web UI](docs/web-ui.md)
 
 ## データベース
 

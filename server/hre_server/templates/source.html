@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}出典{% endblock %}
+{% block body %}
+<p class="crumbs"><a href="/">ワークスペース</a> / <a href="/w/{{ s.workspace }}">{{ s.workspace }}</a> / <a href="/w/{{ s.workspace }}/sources">出典</a> /</p>
+<h1>{{ s.title or '出典' }}</h1>
+<dl class="meta">
+  <dt>種類</dt><dd>{{ s.kind }}</dd>
+  <dt>発生</dt><dd>{{ s.occurred_at|dt or '不明' }}</dd>
+  <dt>取り込み</dt><dd>{{ s.captured_at|dt }} · {{ s.captured_by or '' }}</dd>
+  {% if s.uri %}<dt>URI</dt><dd class="break">{{ s.uri }}</dd>{% endif %}
+  <dt>信頼</dt><dd>{% if s.trusted %}信頼済み（人格フィールド等の根拠にできる）{% else %}未確認{% endif %}</dd>
+</dl>
+<pre class="source">{{ s.content or '（本文なし）' }}</pre>
+
+{% if s.can_write %}
+<form method="post" action="/s/{{ s.id }}/trust" class="inline">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}">
+  <input type="hidden" name="trusted" value="{{ 'false' if s.trusted else 'true' }}">
+  <button class="secondary" data-confirm="{{ '信頼済みを外しますか？' if s.trusted else 'この出典を信頼済みにしますか？以後この出典を根拠に、エージェントが人格フィールドや管理者関係を書けるようになります。' }}">
+    {{ '信頼済みを外す' if s.trusted else '信頼済みにする' }}</button>
+</form>
+{% endif %}
+
+<h2>この出典にもとづく情報</h2>
+<ul class="list">
+{% for f in s.facts %}
+  <li><a href="/e/{{ f.entity_id }}" class="row"><span>{{ f.entity_name }} · {{ f.field_label }}: {{ f.value|fmt_value }}</span>
+    <span class="tag">{{ EPISTEMIC[f.epistemic] }}</span></a></li>
+{% else %}
+  <li class="muted">なし</li>
+{% endfor %}
+</ul>
+{% endblock %}
