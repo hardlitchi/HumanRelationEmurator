@@ -2,14 +2,14 @@
 
 PostgreSQL・エージェント用 MCP サーバー（`hre-mcp`）・人のための Web UI（`hre-web`）をまとめて起動する。VPS に Docker（Compose v2）が入っていればよい。
 
-TLS は外部のリバースプロキシ（VPS の nginx・Caddy・Cloudflare Tunnel など）で終端する前提で、ホストに出すポートは `HRE_PORT`（既定 8080）の1つだけ。その中で `/mcp` は MCP サーバーへ、それ以外は Web UI へ振り分ける。
+TLS は外部のリバースプロキシ（VPS の nginx・Caddy・Cloudflare Tunnel など）で終端する前提で、ホストに出すポートは `HRE_PORT`（既定 8080）の1つだけ。その中で `/mcp` と OAuth の各エンドポイントは MCP サーバーへ、それ以外は Web UI へ振り分ける。
 
 | サービス | 中身 | ホストに出すポート |
 |---|---|---|
 | `db` | PostgreSQL 16。データは `db-data` ボリューム | なし |
 | `mcp` | `hre-mcp --http`。エンドポイントは `/mcp` | なし |
 | `web` | `hre-web` | なし |
-| `proxy` | Caddy（http のみ）。`/mcp` と `/.well-known/oauth-*` を `mcp` へ、それ以外を `web` へ | `127.0.0.1:${HRE_PORT}` |
+| `proxy` | Caddy（http のみ）。`/mcp` と OAuth（`/.well-known/oauth-*`・`/authorize`・`/token`・`/register`・`/revoke`・`/oauth/*`）を `mcp` へ、それ以外を `web` へ | `127.0.0.1:${HRE_PORT}` |
 
 ## 1. 設定ファイルを作る
 

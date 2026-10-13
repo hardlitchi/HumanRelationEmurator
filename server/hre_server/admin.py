@@ -24,7 +24,7 @@ DB_DIR = Path(__file__).resolve().parents[2] / "db"
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("init-db", help="db/schema.sql と db/seed.sql を適用する（空の DB に1回だけ）")
+    sub.add_parser("init-db", help="db/schema.sql・seed.sql・oauth.sql を適用する（空の DB に1回だけ）")
     b = sub.add_parser("bootstrap", help="最初の管理者と管理者用ワークスペース owner を作り、ログイン用トークンを表示する")
     b.add_argument("name", nargs="?", default="admin", help="管理者の名前（既定: admin）")
     w = sub.add_parser("create-workspace")
@@ -51,7 +51,7 @@ def main() -> None:
     with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
         match args.cmd:
             case "init-db":
-                for f in ("schema.sql", "seed.sql"):
+                for f in ("schema.sql", "seed.sql", "oauth.sql"):
                     conn.execute((DB_DIR / f).read_text())
                 print("schema and seed applied")
             case "bootstrap":

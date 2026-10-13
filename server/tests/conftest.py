@@ -4,8 +4,10 @@ HRE_TEST_ADMIN_URL（既定: postgresql://postgres@localhost:5432/postgres）に
 """
 
 import os
+import socket
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 
@@ -28,6 +30,32 @@ def database_url():
     # 管理 CLI 経由で初期化（CLI 自体のテストも兼ねる）
     subprocess.run([sys.executable, "-m", "hre_server.admin", "init-db"], check=True, env=os.environ)
     yield url
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+def server_url(database_url):
+    port = _free_port()
+    proc = subprocess.Popen([sys.executable, "-m", "hre_server.mcp_app", "--http", "--port", str(port)],
+                            env={**os.environ, "DATABASE_URL": database_url},
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    url = f"http://127.0.0.1:{port}/mcp"
+    for _ in range(100):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                break
+        except OSError:
+            if proc.poll() is not None:
+                raise RuntimeError(proc.stdout.read().decode())
+            time.sleep(0.1)
+    yield url
+    proc.terminate()
+    proc.wait(timeout=10)
 
 
 @pytest.fixture

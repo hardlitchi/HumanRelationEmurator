@@ -2,7 +2,7 @@
 
 AIエージェント（各 AITuber、管理者用エージェントなど）が人間関係グラフを読み書きするための MCP サーバー。コードは [`server/`](../server)。
 
-- 認証: エージェントごとに発行するトークン（DB にはハッシュだけを保存）
+- 認証: エージェントごとに発行するトークン（DB にはハッシュだけを保存）。`Authorization: Bearer hre_...` で直接送るか、OAuth（claude.ai のカスタムコネクタ向け）の認可画面で入力する
 - 権限: トークンの持ち主（actor）がワークスペースごとに持つ `read` / `write` / `sensitive_read`
 - 記録者: 書き込みの `recorded_by` は常にトークンの持ち主。エージェントが他人を名乗ることはできない
 
@@ -65,6 +65,16 @@ hre-mcp --http --host 127.0.0.1 --port 8000
 - エンドポイントは `https://hre.example.com/mcp`。`Authorization: Bearer <token>` が無い・無効なら 401
 - TLS は Caddy や nginx などのリバースプロキシで終端し、サーバー自体は 127.0.0.1 で待ち受ける
 - `HRE_ALLOWED_HOSTS` は DNS リバインディング対策の Host ヘッダ許可リスト（カンマ区切り）
+
+### OAuth（claude.ai のカスタムコネクタ）
+
+claude.ai のカスタムコネクタは固定トークンを送れないことが多いので、MCP サーバーが OAuth の認可サーバーも兼ねる（[`server/hre_server/oauth.py`](../server/hre_server/oauth.py)）。手順は [README](../README.md#claudeai-から使う)。
+
+- メタデータ: `/.well-known/oauth-protected-resource/mcp` と `/.well-known/oauth-authorization-server`（発行者は `HRE_PUBLIC_URL`）
+- 動的クライアント登録 `/register`、認可 `/authorize`（PKCE S256 必須）、トークン `/token`、取り消し `/revoke`
+- 認可画面 `/oauth/login` で人が `hre_` トークンを入力し、その持ち主（actor）として認可する。アクセストークン `hrea_`（1時間）とリフレッシュトークン `hrer_`（90日、使うたびに取り替え）を発行する
+- 発行したものはすべて入力した `hre_` トークンに結び付く。そのトークンを rotate / revoke すると、OAuth で出したトークンも使えなくなる
+- 状態は DB の `hre.oauth_*` 表に置く（[`db/oauth.sql`](../db/oauth.sql)）。`hre-mcp --http` が起動時に毎回適用するので、既存の DB でも手作業は要らない
 
 ### 手元で stdio として動かす
 

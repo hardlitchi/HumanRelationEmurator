@@ -3,6 +3,7 @@
   stdio:            HRE_TOKEN=... python -m hre_server.mcp_app
   streamable HTTP:  python -m hre_server.mcp_app --http --host 0.0.0.0 --port 8000
                     （Authorization: Bearer <token> で認証。TLS はリバースプロキシで終端する）
+                    claude.ai など OAuth でしか接続できないクライアントには OAuth 認可サーバーも兼ねる（oauth.py）
 """
 
 from __future__ import annotations
@@ -12,16 +13,14 @@ import os
 from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
-import anyio.to_thread
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.provider import AccessToken
-from mcp.server.auth.settings import AuthSettings
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
-from . import service
+from . import oauth, service
 from .db import pool
 
 INSTRUCTIONS = """\
@@ -43,21 +42,10 @@ Id = Annotated[str, Field(description="UUID")]
 Epistemic = Literal["stated", "observed", "reported", "inferred"]
 
 
-class DbTokenVerifier:
-    async def verify_token(self, token: str) -> AccessToken | None:
-        def check() -> str | None:
-            with pool().connection() as conn:
-                actor = service.authenticate(conn, token)
-                return actor.id if actor else None
-
-        actor_id = await anyio.to_thread.run_sync(check)
-        return AccessToken(token=token, client_id=actor_id, scopes=[]) if actor_id else None
-
-
 def _call(fn: Callable[..., Any], **kwargs: Any) -> Any:
     with pool().connection() as conn:
         token = get_access_token()
-        actor_id = token.client_id if token else _stdio_actor_id
+        actor_id = token.subject if token else _stdio_actor_id
         if actor_id is None:
             raise ToolError("認証されていません")
         try:
@@ -68,10 +56,18 @@ def _call(fn: Callable[..., Any], **kwargs: Any) -> Any:
 
 def build_server(auth_url: str | None = None) -> MCPServer:
     kwargs: dict[str, Any] = {}
+    provider = None
     if auth_url:
-        kwargs["token_verifier"] = DbTokenVerifier()
-        kwargs["auth"] = AuthSettings(issuer_url=auth_url, resource_server_url=auth_url.rstrip("/") + "/mcp")
+        # hre_ トークンの直接 Bearer と、OAuth で発行したアクセストークンの両方を受け付ける
+        provider = oauth.HreOAuthProvider(auth_url)
+        kwargs["auth_server_provider"] = provider
+        kwargs["auth"] = AuthSettings(issuer_url=auth_url, resource_server_url=auth_url.rstrip("/") + "/mcp",
+                                      validate_token_resource=False,
+                                      client_registration_options=ClientRegistrationOptions(enabled=True),
+                                      revocation_options=RevocationOptions(enabled=True))
     mcp = MCPServer("human-relation-emurator", instructions=INSTRUCTIONS, **kwargs)
+    if provider:
+        mcp.custom_route(oauth.LOGIN_PATH, methods=["GET", "POST"])(provider.login)
 
     @mcp.tool()
     def list_workspaces() -> dict:
@@ -233,6 +229,8 @@ def main() -> None:
         return
 
     public_url = os.environ.get("HRE_PUBLIC_URL", f"http://{args.host}:{args.port}")
+    with pool().connection() as conn:
+        oauth.apply_schema(conn)   # 既存の DB にも OAuth 用の表を足す（何度流しても同じ）
     allowed_hosts = [h for h in os.environ.get("HRE_ALLOWED_HOSTS", "").split(",") if h]
     security = TransportSecuritySettings(allowed_hosts=allowed_hosts) if allowed_hosts else None
     build_server(auth_url=public_url).run("streamable-http", host=args.host, port=args.port,
