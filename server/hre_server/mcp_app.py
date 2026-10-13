@@ -86,7 +86,7 @@ def build_server(auth_url: str | None = None) -> MCPServer:
 
     @mcp.tool()
     def get_entity(entity_id: Id) -> dict:
-        """人物カード: 識別子、現在有効な主張（確度順）、関係とその文脈を返す。"""
+        """人物カード: 識別子、現在有効な主張（確度順）、関係とその文脈・強さ（0〜1）、強い順の相手（ties）を返す。"""
         return _call(service.get_entity, entity_id=entity_id)
 
     @mcp.tool()

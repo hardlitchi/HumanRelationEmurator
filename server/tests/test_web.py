@@ -204,3 +204,22 @@ def test_admin_erase_requires_typed_name(app, conn, world):
     assert "表示名を正確に" in r.text
     c.post(f"/e/{x}/erase", data={"csrf": csrf, "confirm": "消す人"})
     assert c.get(f"/e/{x}").status_code == 404
+
+
+def test_strength_and_interactions_are_shown(app, conn, world):
+    me = service.create_entity(conn, world.agent_a, "person", "AITuber A", world.a, is_self=True)["id"]
+    core = service.create_entity(conn, world.agent_a, "person", "コアリスナー", world.a)["id"]
+    service.create_entity(conn, world.agent_a, "person", "Aさん（未接触）", world.a)
+    for _ in range(4):
+        service.record_interaction(conn, world.agent_a, "2026-10-01T20:00:00+09:00", "stream_chat",
+                                   [{"entity_id": core, "role": "initiator"}, {"entity_id": me}], depth=2,
+                                   summary="スパチャで誕生日を祝ってくれた")
+    c = _login(app, world.tokens["owner"])
+
+    card = c.get(f"/e/{me}").text
+    assert "つながりの強さ" in card and "<meter" in card and "やり取り 4回" in card
+    assert "スパチャで誕生日を祝ってくれた" in card and "配信コメント" in card
+
+    # 一覧を自分との強さ順に並べると、やり取りのある相手が先に来る
+    page = c.get(f"/w/{world.a}", params={"sort": "strength"}).text
+    assert page.index("コアリスナー") < page.index("Aさん（未接触）")

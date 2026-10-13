@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit
+from zoneinfo import ZoneInfo
 
 import anyio.to_thread
 from psycopg import Connection, errors
@@ -54,12 +55,27 @@ ACTION_LABELS = {"create": "追加", "update": "変更", "retract": "取り消�
 TARGET_LABELS = {"facts": "情報", "relationships": "関係", "entities": "人", "sources": "出典", "interactions": "やり取り",
                  "entity_identifiers": "識別子", "field_definitions": "項目", "field_aliases": "項目の別名"}
 
+CHANNEL_LABELS = {"in_person": "対面", "call": "通話", "video": "ビデオ通話", "chat": "チャット", "email": "メール",
+                  "sns": "SNS", "event": "イベント", "stream": "配信", "stream_chat": "配信コメント", "other": "その他"}
+DEPTH_LABELS = {1: "挨拶程度", 2: "用件", 3: "深い会話"}
+
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.filters["fmt_value"] = lambda v: v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
-templates.env.filters["dt"] = lambda v: v.strftime("%Y-%m-%d %H:%M") if hasattr(v, "strftime") else (v or "")
+TZ = ZoneInfo(os.environ.get("HRE_TIMEZONE", "Asia/Tokyo"))   # 画面に出す時刻のタイムゾーン
+
+
+def _dt(v: Any) -> str:
+    if not hasattr(v, "strftime"):
+        return v or ""
+    return (v.astimezone(TZ) if getattr(v, "tzinfo", None) else v).strftime("%Y-%m-%d %H:%M")
+
+
+templates.env.filters["dt"] = _dt
+templates.env.filters["pct"] = lambda v: "—" if v is None else f"{round(float(v) * 100)}"
 templates.env.globals.update(EPISTEMIC=EPISTEMIC_LABELS, KINDS=KIND_LABELS, WS_KINDS=WS_KIND_LABELS,
                              SCOPES=SCOPE_LABELS,
-                             ACTIONS=ACTION_LABELS, TARGETS=TARGET_LABELS)
+                             ACTIONS=ACTION_LABELS, TARGETS=TARGET_LABELS,
+                             CHANNELS=CHANNEL_LABELS, DEPTHS=DEPTH_LABELS)
 
 
 class LoginRequired(Exception):
@@ -242,7 +258,17 @@ def workspace(request, conn, me):
     q = request.query_params.get("q") or None
     kind = request.query_params.get("kind") or None
     entities = service.list_entities(conn, me, key, q, kind)
-    return "workspace.html", {"ws": ws, "entities": entities, "q": q or "", "kind": kind or ""}
+    # 自分（このワークスペースの視点の主）との強さを並べる。コアリスナーや親しい相手が上に来るように並べ替えもできる
+    self_e = next((x for x in entities if x["is_self"]), None) or service._one(
+        conn, "SELECT id::text FROM hre.entities WHERE workspace_id = %s AND is_self", (ws["id"],))
+    ties = {t["other_id"]: t for t in service.entity_ties(conn, ws["id"], self_e["id"])} if self_e else {}
+    for x in entities:
+        x["tie"] = ties.get(x["id"])
+    sort = request.query_params.get("sort") or ""
+    if sort == "strength":
+        entities.sort(key=lambda x: (not x["is_self"], -(x["tie"]["strength"] if x["tie"] else -1)))
+    return "workspace.html", {"ws": ws, "entities": entities, "q": q or "", "kind": kind or "", "sort": sort,
+                              "has_self": bool(self_e)}
 
 
 @page
@@ -263,6 +289,7 @@ def entity(request, conn, me):
         ctx["rel_fields"] = service.list_fields(conn, "relationship")
         ctx["relation_types"] = service.list_relation_types(conn)
         ctx["others"] = [x for x in service.list_entities(conn, me, e["workspace"]) if x["id"] != e["id"]]
+    ctx["interactions"] = service.list_interactions(conn, me, e["id"], limit=30)
     ctx["activity"] = service.list_activity(conn, me, entity_id=e["id"], limit=20)
     return "entity.html", ctx
 

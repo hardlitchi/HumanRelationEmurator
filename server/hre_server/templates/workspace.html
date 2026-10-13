@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_meter.html" import meter %}
 {% block title %}{{ ws.key }}{% endblock %}
 {% block body %}
 <p class="crumbs"><a href="/">ワークスペース</a> /</p>
@@ -11,6 +12,12 @@
     <option value="">すべて</option>
     {% for k, label in KINDS.items() %}<option value="{{ k }}" {% if kind == k %}selected{% endif %}>{{ label }}</option>{% endfor %}
   </select>
+  {% if has_self %}
+  <select name="sort">
+    <option value="">名前順</option>
+    <option value="strength" {% if sort == 'strength' %}selected{% endif %}>自分との強さ順</option>
+  </select>
+  {% endif %}
   <button>検索</button>
 </form>
 
@@ -20,7 +27,7 @@
     <a href="/e/{{ e.id }}" class="row">
       <span>{% if e.is_self %}<span class="tag self">自分</span> {% endif %}<strong>{{ e.display_name }}</strong>
         {% if e.kind != 'person' %}<span class="tag">{{ KINDS[e.kind] }}</span>{% endif %}</span>
-      <span class="muted small">関係 {{ e.relationship_count }} · 情報 {{ e.fact_count }}</span>
+      <span class="muted small">{% if e.tie %}{{ meter(e.tie, detail=false) }}{% endif %} 関係 {{ e.relationship_count }} · 情報 {{ e.fact_count }}</span>
     </a>
   </li>
 {% else %}

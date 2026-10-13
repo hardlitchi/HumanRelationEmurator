@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_meter.html" import meter %}
 {% block title %}{{ e.display_name }}{% endblock %}
 {% macro fact_line(f, can_write, dim=false) %}
   <li class="fact{% if dim %} dim{% endif %}">
@@ -77,6 +78,7 @@
         <span><span class="tag">{{ r.label }}</span> <a href="/e/{{ r.other_id }}"><strong>{{ r.other_name }}</strong></a></span>
         <span class="muted small">{% if r.valid_from %}{{ r.valid_from }}〜 · {% endif %}{{ r.recorded_by or '' }}</span>
       </div>
+      {% if r.strength %}<div>{{ meter(r.strength) }}</div>{% endif %}
       {% if r.facts %}
       <ul class="facts">{% for f in r.facts %}<li class="fact"><div class="value"><span class="muted small">{{ f.field_label }}:</span>
         {% if f.value_entity_id %}<a href="/e/{{ f.value_entity_id }}">{{ f.value_entity_name }}</a>{% else %}{{ f.value|fmt_value }}{% endif %}</div>
@@ -126,6 +128,39 @@
     </form>
   </details>
   {% endif %}
+</section>
+
+<section>
+  <h2>つながりの強さ</h2>
+  <p class="muted small">やり取りの回数・深さ・新しさと、どちらから働きかけたかで算出した値（0〜100）。関係に「親しさ（主観）」があれば両者の平均です。関係を登録していない相手も、やり取りがあれば出ます。</p>
+  <ul class="list">
+  {% for t in e.ties %}
+    <li><div class="row">
+      <a href="/e/{{ t.other_id }}"><strong>{{ t.other_name }}</strong></a>
+      <span class="muted small">{% if t.last_interaction_at %}最終 {{ t.last_interaction_at[:10] }} · {% endif %}共通の知人 {{ t.common_neighbors or 0 }}{% if t.reciprocity is not none %} · 互恵性 {{ t.reciprocity|pct }}{% endif %}</span>
+    </div>{{ meter(t) }}</li>
+  {% else %}
+    <li class="muted">まだ関係もやり取りもありません</li>
+  {% endfor %}
+  </ul>
+</section>
+
+<section>
+  <h2>やり取り</h2>
+  <ul class="list">
+  {% for i in interactions %}
+    <li>
+      <div class="row"><span><span class="tag">{{ CHANNELS.get(i.channel, i.channel) }}</span>{% if i.depth %} <span class="muted small">{{ DEPTHS[i.depth] }}</span>{% endif %}
+        {% if i.role == 'initiator' %}<span class="muted small">· この人から</span>{% endif %}</span>
+        <span class="muted small">{{ i.occurred_at|dt }}</span></div>
+      {% if i.summary %}<div>{{ i.summary }}</div>{% endif %}
+      <div class="muted small">{% for o in i.with %}<a href="/e/{{ o.id }}">{{ o.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+        {% if i.recorded_by %} · {{ i.recorded_by }}{% endif %}{% if i.source_id %} · <a href="/s/{{ i.source_id }}">出典</a>{% endif %}</div>
+    </li>
+  {% else %}
+    <li class="muted">まだ記録がありません</li>
+  {% endfor %}
+  </ul>
 </section>
 
 {% if ws.can_write %}

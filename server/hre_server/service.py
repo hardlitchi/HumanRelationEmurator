@@ -370,11 +370,18 @@ def get_entity(conn: Connection, actor: Actor, entity_id: str, detail: bool = Fa
               FROM hre.current_facts cf WHERE relationship_id = %s ORDER BY field_key, recorded_at DESC""",
             (edge["relationship_id"],)) if f["ai_shareable"] or sensitive_ok]
 
+    ties = entity_ties(conn, e["workspace_id"], entity_id)
+    by_other = {t["other_id"]: t for t in ties}
+    for edge in edges:
+        t = by_other.get(edge["other_id"])
+        edge["strength"] = {k: t[k] for k in ("strength", "derived_strength", "manual_strength", "interaction_count")} \
+            if t else None
+
     idents = _q(conn, "SELECT scheme, value FROM hre.entity_identifiers WHERE entity_id = %s ORDER BY scheme, value",
                 (entity_id,))
     del e["workspace_id"], e["merged_into_id"]
     return {**e, "identifiers": idents, "facts": [_fact_view(f) for f in facts], "relationships": edges,
-            "hidden_sensitive_facts": hidden}
+            "ties": ties[:20], "hidden_sensitive_facts": hidden}
 
 
 def _fact_view(f: dict) -> dict:
@@ -540,6 +547,151 @@ def record_interaction(conn: Connection, actor: Actor, occurred_at: str, channel
     except errors.Error as e:
         raise _db_error(e) from e
     return {"interaction_id": row["id"]}
+
+
+# ---------------------------------------------------------------------------
+# 関係の強さ（派生値）。docs/data-model.md「5. 関係の強さ・密度・クラスタは派生値」の v1
+# ---------------------------------------------------------------------------
+
+TIE_ALGORITHM = "tie_strength_v1"
+TIE_PARAMS = {"half_life_days": 90, "saturation": 5, "reciprocity_weight": 0.3, "max_age_hours": 6}
+
+
+def _compute_ties(conn: Connection, ws_id: str) -> str:
+    """ワークスペース内の全ペアの強さを計算して新しい analysis_run に保存し、古い run は消す。
+
+    - 頻度スコア: 2人が共に参加した（mentioned を除く）やり取りごとに depth × exp(−経過日数 / 90) を足し、
+      1 − exp(−合計 / 5) で 0〜1 に収める（depth 未記録は 1）
+    - 互恵性: 各自が initiator だった回数の小さい方 ÷ 大きい方。どちらも initiator が記録されていなければ 1 とみなす
+    - derived_strength = 頻度スコア × (0.7 + 0.3 × 互恵性)
+    - manual_strength = (closeness_rating − 1) / 4（同じ2人の間で最も確度が高く新しい評価）
+    - common_neighbors: 関係かやり取りでつながっている共通の相手の数
+    """
+    run = _one(conn, """INSERT INTO hre.analysis_runs (workspace_id, algorithm, params) VALUES (%s, %s, %s)
+                        RETURNING id::text""", (ws_id, TIE_ALGORITHM, Jsonb(TIE_PARAMS)))["id"]
+    conn.execute("""
+        WITH p AS (
+            SELECT ip.interaction_id, ip.entity_id, ip.role, i.occurred_at, coalesce(i.depth, 1) AS depth
+              FROM hre.interaction_participants ip
+              JOIN hre.interactions i ON i.id = ip.interaction_id
+             WHERE i.workspace_id = %(ws)s AND ip.role <> 'mentioned'
+        ), together AS (
+            SELECT a.entity_id AS ea, b.entity_id AS eb, a.occurred_at, a.depth,
+                   a.role = 'initiator' AS a_init, b.role = 'initiator' AS b_init
+              FROM p a JOIN p b ON a.interaction_id = b.interaction_id AND a.entity_id < b.entity_id
+        ), agg AS (
+            SELECT ea, eb, count(*) AS n, max(occurred_at) AS last_at,
+                   sum(depth * exp(-greatest(extract(epoch FROM now() - occurred_at) / 86400, 0) / 90)) AS score,
+                   count(*) FILTER (WHERE a_init) AS ia, count(*) FILTER (WHERE b_init) AS ib
+              FROM together GROUP BY ea, eb
+        ), manual AS (
+            SELECT DISTINCT ON (ea, eb) ea, eb, m FROM (
+                SELECT least(r.source_entity_id, r.target_entity_id) AS ea,
+                       greatest(r.source_entity_id, r.target_entity_id) AS eb,
+                       ((cf.value #>> '{}')::numeric - 1) / 4 AS m, cf.confidence, cf.recorded_at
+                  FROM hre.current_facts cf JOIN hre.relationships r ON r.id = cf.relationship_id
+                 WHERE cf.field_key = 'closeness_rating' AND r.workspace_id = %(ws)s
+                   AND (r.valid_to IS NULL OR r.valid_to > current_date)) x
+             ORDER BY ea, eb, confidence DESC, recorded_at DESC
+        ), related AS (
+            SELECT DISTINCT least(source_entity_id, target_entity_id) AS ea,
+                            greatest(source_entity_id, target_entity_id) AS eb
+              FROM hre.relationships
+             WHERE workspace_id = %(ws)s AND (valid_to IS NULL OR valid_to > current_date)
+        ), pairs AS (
+            SELECT ea, eb FROM agg UNION SELECT ea, eb FROM manual UNION SELECT ea, eb FROM related
+        )
+        INSERT INTO hre.pair_metrics (run_id, entity_a, entity_b, interaction_count, last_interaction_at, reciprocity,
+                                      derived_strength, manual_strength)
+        SELECT %(run)s, pr.ea, pr.eb, coalesce(agg.n, 0), agg.last_at,
+               CASE WHEN greatest(agg.ia, agg.ib) > 0 THEN least(agg.ia, agg.ib)::real / greatest(agg.ia, agg.ib) END,
+               coalesce((1 - exp(-agg.score / 5))
+                        * (0.7 + 0.3 * CASE WHEN greatest(agg.ia, agg.ib) > 0
+                                            THEN least(agg.ia, agg.ib)::real / greatest(agg.ia, agg.ib) ELSE 1 END), 0),
+               m.m
+          FROM pairs pr
+          JOIN hre.entities a ON a.id = pr.ea AND a.merged_into_id IS NULL
+          JOIN hre.entities b ON b.id = pr.eb AND b.merged_into_id IS NULL
+          LEFT JOIN agg ON agg.ea = pr.ea AND agg.eb = pr.eb
+          LEFT JOIN manual m ON m.ea = pr.ea AND m.eb = pr.eb""", {"ws": ws_id, "run": run})
+    conn.execute("""
+        WITH adj AS (
+            SELECT entity_a AS x, entity_b AS y FROM hre.pair_metrics
+             WHERE run_id = %(run)s AND (interaction_count > 0 OR manual_strength IS NOT NULL)
+            UNION
+            SELECT entity_b, entity_a FROM hre.pair_metrics
+             WHERE run_id = %(run)s AND (interaction_count > 0 OR manual_strength IS NOT NULL)
+            UNION
+            SELECT from_id, to_id FROM hre.active_edges WHERE workspace_id = %(ws)s
+        )
+        UPDATE hre.pair_metrics pm
+           SET common_neighbors = (SELECT count(DISTINCT p.y) FROM adj p JOIN adj q ON q.y = p.y
+                                    WHERE p.x = pm.entity_a AND q.x = pm.entity_b)
+         WHERE pm.run_id = %(run)s""", {"ws": ws_id, "run": run})
+    conn.execute("""DELETE FROM hre.analysis_runs WHERE workspace_id = %s AND algorithm = %s AND id <> %s""",
+                 (ws_id, TIE_ALGORITHM, run))
+    return run
+
+
+def tie_run(conn: Connection, ws_id: str) -> str:
+    """最新の強さの run。記録が変わったか、時間減衰のため古くなっていれば計算し直す。"""
+    def fresh() -> str | None:
+        row = _one(conn, f"""
+            SELECT r.id::text FROM hre.analysis_runs r
+             WHERE r.workspace_id = %(ws)s AND r.algorithm = %(alg)s
+               AND r.computed_at > now() - interval '{int(TIE_PARAMS["max_age_hours"])} hours'
+               AND NOT EXISTS (SELECT 1 FROM hre.audit_log l WHERE l.workspace_id = %(ws)s AND l.at >= r.computed_at)
+             ORDER BY r.computed_at DESC LIMIT 1""", {"ws": ws_id, "alg": TIE_ALGORITHM})
+        return row["id"] if row else None
+
+    run = fresh()
+    if run:
+        return run
+    with conn.transaction():
+        # 同時に開かれても計算は1回で済むように、ワークスペース単位で直列化する
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext('hre_ties:' || %s))", (ws_id,))
+        return fresh() or _compute_ties(conn, ws_id)
+
+
+def entity_ties(conn: Connection, ws_id: str, entity_id: str) -> list[dict]:
+    """この人と、関係かやり取りがある相手を強い順に。strength は主観評価があれば算出値との平均。"""
+    run = tie_run(conn, ws_id)
+    rows = _q(conn, """
+        SELECT o.id::text AS other_id, o.display_name AS other_name, o.kind AS other_kind,
+               pm.interaction_count, pm.last_interaction_at, pm.reciprocity, pm.common_neighbors,
+               pm.derived_strength, pm.manual_strength,
+               CASE WHEN pm.manual_strength IS NULL THEN pm.derived_strength
+                    ELSE (pm.derived_strength + pm.manual_strength) / 2 END AS strength
+          FROM hre.pair_metrics pm
+          JOIN hre.entities o ON o.id = CASE WHEN pm.entity_a = %(e)s THEN pm.entity_b ELSE pm.entity_a END
+         WHERE pm.run_id = %(run)s AND %(e)s IN (pm.entity_a, pm.entity_b)
+         ORDER BY strength DESC, pm.interaction_count DESC, o.display_name""", {"run": run, "e": entity_id})
+    for r in rows:
+        for k in ("strength", "derived_strength", "manual_strength", "reciprocity"):
+            if r[k] is not None:
+                r[k] = round(float(r[k]), 2)
+        if r["last_interaction_at"] is not None:
+            r["last_interaction_at"] = str(r["last_interaction_at"])
+    return rows
+
+
+def list_interactions(conn: Connection, actor: Actor, entity_id: str, limit: int = 50) -> list[dict]:
+    """この人が参加したやり取り（新しい順）と、一緒にいた人。"""
+    ws_id = _ws_of(conn, "entities", entity_id)
+    _check_read(conn, actor, ws_id)
+    rows = _q(conn, """
+        SELECT i.id::text, i.occurred_at, i.ended_at, i.channel, i.depth, i.summary, i.source_id::text,
+               me.role, (SELECT name FROM hre.actors WHERE id = i.recorded_by) AS recorded_by
+          FROM hre.interaction_participants me JOIN hre.interactions i ON i.id = me.interaction_id
+         WHERE me.entity_id = %s ORDER BY i.occurred_at DESC LIMIT %s""", (entity_id, limit))
+    others = _q(conn, """
+        SELECT p.interaction_id::text, p.entity_id::text AS id, e.display_name AS name, p.role
+          FROM hre.interaction_participants p JOIN hre.entities e ON e.id = p.entity_id
+         WHERE p.interaction_id = ANY(%s::uuid[]) AND p.entity_id <> %s ORDER BY e.display_name""",
+              ([r["id"] for r in rows], entity_id))
+    for r in rows:
+        r["with"] = [o for o in others if o["interaction_id"] == r["id"]]
+    return rows
 
 
 # ---------------------------------------------------------------------------
