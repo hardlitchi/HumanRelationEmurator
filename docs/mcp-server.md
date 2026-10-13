@@ -17,7 +17,7 @@ AIエージェント（各 AITuber、管理者用エージェントなど）が�
 | `resolve_field` / `list_fields` / `propose_field` / `add_field_alias` | フィールドマスターの参照と拡張 |
 | `list_relation_types` | 関係の種類の一覧 |
 | `list_clusters` | 関係の強さから推定したグループ（「自分」は含まない） |
-| `add_source` / `get_source` | 原文（会話・配信コメント等）の保存と参照 |
+| `add_source` / `get_source` | 原文（会話・配信コメント・設定資料等）の保存と参照。HTTP では信頼済みにしてもらうための `review_url` も返す |
 | `record_fact` / `retract_fact` | 人・関係についての主張の記録と取り消し |
 | `add_relationship` / `end_relationship` | 関係の追加と終了 |
 | `record_interaction` | やり取りの記録（関係の強さの材料） |

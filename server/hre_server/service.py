@@ -136,7 +136,17 @@ def _audit(conn: Connection, actor: Actor, ws_id: str | None, action: str, targe
 def _db_error(e: Exception) -> HreError:
     # トリガーの RAISE EXCEPTION や制約違反は、エージェントが直せるようにそのまま返す
     msg = getattr(getattr(e, "diag", None), "message_primary", None) or str(e)
+    if "can only be written by a human or from a trusted source" in msg:
+        msg += TRUSTED_SOURCE_HINT
     return HreError(msg)
+
+
+# 人格フィールド・管理者関係をエージェントが書けなかったときに、次に何をすればよいかを返す
+TRUSTED_SOURCE_HINT = (
+    "\n人格フィールドと管理者関係は、人が書くか、人が「信頼済み」にした出典に基づく場合しか書けません。"
+    "設定資料・原作などの原文を add_source で保存し、返ってきた review_url を人に渡して"
+    "「信頼済みにする」を押してもらってから、その source_id を付けて書き直してください。"
+)
 
 
 # ---------------------------------------------------------------------------
