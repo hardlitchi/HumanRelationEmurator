@@ -469,6 +469,9 @@ def record_fact(conn: Connection, actor: Actor, field: str, value: Any, epistemi
     ws_id = _ws_of(conn, "entities", entity_id) if entity_id else _ws_of(conn, "relationships", relationship_id)
     _check_write(actor, ws_id)
     f = _field(conn, field)
+    # MCP クライアントは "5" のような数字の文字列を数値にして送ってくることがある。選択肢は文字列なのでそろえる
+    if f["value_type"] == "enum" and isinstance(value, int | float) and not isinstance(value, bool):
+        value = str(int(value)) if float(value).is_integer() else str(value)
     value_json, value_entity = (None, str(value)) if f["value_type"] == "entity_ref" else (Jsonb(value), None)
     try:
         with conn.transaction():
