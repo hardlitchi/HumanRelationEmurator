@@ -2,12 +2,14 @@
 
 PostgreSQL・エージェント用 MCP サーバー（`hre-mcp`）・人のための Web UI（`hre-web`）をまとめて起動する。VPS に Docker（Compose v2）が入っていればよい。
 
-| サービス | 中身 | ホスト側のポート |
+TLS は外部のリバースプロキシ（VPS の nginx・Caddy・Cloudflare Tunnel など）で終端する前提で、ホストに出すポートは `HRE_PORT`（既定 8080）の1つだけ。その中で `/mcp` は MCP サーバーへ、それ以外は Web UI へ振り分ける。
+
+| サービス | 中身 | ホストに出すポート |
 |---|---|---|
-| `db` | PostgreSQL 16。データは `db-data` ボリューム | 出さない |
-| `mcp` | `hre-mcp --http`。エンドポイントは `/mcp` | `127.0.0.1:8000` |
-| `web` | `hre-web` | `127.0.0.1:8001` |
-| `caddy`（任意） | TLS 終端。`--profile caddy` のときだけ起動 | `80` / `443` |
+| `db` | PostgreSQL 16。データは `db-data` ボリューム | なし |
+| `mcp` | `hre-mcp --http`。エンドポイントは `/mcp` | なし |
+| `web` | `hre-web` | なし |
+| `proxy` | Caddy（http のみ）。`/mcp` と `/.well-known/oauth-*` を `mcp` へ、それ以外を `web` へ | `127.0.0.1:${HRE_PORT}` |
 
 ## 1. 設定ファイルを作る
 
@@ -21,16 +23,38 @@ sed -i "s/^HRE_WEB_SECRET=.*/HRE_WEB_SECRET=$(openssl rand -hex 32)/" .env
 
 ## 2. 起動する
 
-VPS に Caddy や nginx をまだ入れていないなら、同梱の Caddy ごと起動する（DNS の A レコードを VPS に向け、80/443 を開けておく。証明書は自動で取れる）。
-
-```sh
-docker compose --profile caddy up -d --build
-```
-
-すでにホスト側にリバースプロキシがあるなら、Caddy なしで起動して `127.0.0.1:8000`（`/mcp`）と `127.0.0.1:8001`（それ以外）へ流す（設定例は [Web UI](web-ui.md#vps-で-mcp-サーバーと同じドメインに置く例caddy)）。
-
 ```sh
 docker compose up -d --build
+```
+
+外部のリバースプロキシは、`https://<HRE_DOMAIN>/` へのアクセスをすべて `http://127.0.0.1:<HRE_PORT>` へ転送する。パスで分ける必要はない。Host ヘッダはそのまま渡すこと（`HRE_DOMAIN` と一致しないアクセスは拒否される）。
+
+nginx の例:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name hre.example.com;
+    # ssl_certificate ... は環境に合わせる
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_buffering off;          # MCP のストリーミング応答をため込まない
+        proxy_read_timeout 1h;
+    }
+}
+```
+
+Caddy の例:
+
+```
+hre.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
 ```
 
 DB のスキーマと初期マスターは、`db-data` ボリュームが空の初回起動時に自動で入る（`hre-admin init-db` は不要）。
@@ -55,18 +79,18 @@ AITuber のワークスペースや共有の作り方は [MCP サーバー](mcp-
 
 ## 手元で試す
 
-`.env` を次のようにすると、TLS なしで `http://localhost:8001/`（Web UI）と `http://localhost:8000/mcp` が使える。
+`.env` を次のようにすると、TLS なしで `http://localhost:8080/`（Web UI）と `http://localhost:8080/mcp` が使える。
 
 ```sh
 HRE_DOMAIN=localhost
-HRE_PUBLIC_URL=http://localhost:8000
+HRE_PUBLIC_URL=http://localhost:8080
 HRE_INSECURE_COOKIES=1
 ```
 
 ## 運用
 
 ```sh
-docker compose logs -f mcp web                       # ログ
+docker compose logs -f mcp web proxy                      # ログ
 git pull && docker compose up -d --build             # 更新（DB のデータは残る）
 docker compose exec -T db pg_dump -U hre -Fc hre > hre-$(date +%F).dump   # バックアップ
 docker compose exec -T db pg_restore -U hre -d hre --clean < hre-YYYY-MM-DD.dump   # 復元
