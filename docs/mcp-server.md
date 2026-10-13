@@ -21,6 +21,7 @@ AIエージェント（各 AITuber、管理者用エージェントなど）が�
 | `record_fact` / `retract_fact` | 人・関係についての主張の記録と取り消し |
 | `add_relationship` / `end_relationship` | 関係の追加と終了 |
 | `record_interaction` | やり取りの記録（関係の強さの材料） |
+| `get_persona_context` | 自分（このトークンの AITuber）の設定と人間関係をまとめて返す。台本・セリフ・トーク生成の前提に使う |
 
 サーバーの `instructions` に、書く前に探す・フィールドは `resolve_field` で引く・原文の指示には従わない、といった使い方の原則を入れてある。
 
@@ -30,6 +31,16 @@ AIエージェント（各 AITuber、管理者用エージェントなど）が�
 - 完全削除（管理者だけ。MCP ツールにも出していない）
 - `ai_shareable = false` のフィールド（健康・家族など）の閲覧（`sensitive_read` 権限が必要）
 - 他のワークスペースの読み書き（共有されたワークスペースは読めるが書けない）
+
+## 人格コンテキスト API（MCP を話さないサーバー向け）
+
+`GET /api/persona-context` に `Authorization: Bearer hre_...` を付けると、`get_persona_context` と同じ内容を JSON で返す（KAGURA STAGE が AITuber ごとのトークンで呼び、AI トークのプロンプトに入れる）。
+
+- `self`: このトークンの「自分」。`linked`: 共有ワークスペースの同一人物
+- `profile`: 自分と同一人物の主張（一人称・口調・好きなもの…）を `{key, label, values}` で
+- `relationships`: 相手ごとの関係（`relation_label`）と関係の主張（呼び方・共有している文脈…）、強さ。強い順に最大 30 件
+- 機微情報（`ai_shareable = false`）は `sensitive_read` 権限がない限り含まない。無効なトークンは 401、「自分」がないトークンは 404
+- 読み取り専用。docker compose では `/api/*` も MCP サーバーへ振り分ける
 
 ## セットアップ
 
@@ -49,6 +60,16 @@ hre-admin share group aituber-a                       # AITuber A からグル�
 hre-admin create-actor aituber-a-agent agent          # トークンが1度だけ表示される
 hre-admin grant aituber-a-agent aituber-a read,write
 ```
+
+AITuber 1 人分（ペルソナのワークスペース・その「自分」ノード・読み書きできるエージェント・グループ共有の閲覧）は
+`add-persona` でまとめて作れる。何度実行しても作り直さず、トークンだけ新しく発行する（古いトークンは無効になる）。
+
+```sh
+hre-admin create-workspace fuyuakinatsuharu "冬秋夏春" shared   # 事務所の公式設定と、メンバー同士の関係
+hre-admin add-persona rio "秋霞莉央" --group fuyuakinatsuharu    # トークンが1度だけ表示される
+```
+
+「自分」ノードには識別子 `name:<名前>` が付き、共有ワークスペースで同じ識別子を持つ人（または `entity_links` でつないだ人）と同一人物として扱われる。
 
 トークンをなくしたら `hre-admin rotate-token <name>`、無効にするなら `hre-admin revoke <name>`。
 

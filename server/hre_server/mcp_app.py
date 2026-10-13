@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import os
+
+import anyio.to_thread
 from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
@@ -19,6 +21,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 from . import oauth, service
 from .db import pool
@@ -60,6 +64,32 @@ def _call(fn: Callable[..., Any], **kwargs: Any) -> Any:
             raise ToolError(str(e)) from e
 
 
+PERSONA_CONTEXT_PATH = "/api/persona-context"
+
+
+async def persona_context_route(request: Request) -> Response:
+    """GET /api/persona-context（Authorization: Bearer hre_...）。KAGURA STAGE などが AITuber ごとのトークンで、
+    台本・トーク生成に渡す設定と人間関係を JSON で受け取る。MCP を話さないサーバー向けの読み取り専用の入口。"""
+    auth = request.headers.get("authorization", "")
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+
+    def run() -> tuple[int, dict]:
+        with pool().connection() as conn:
+            actor = service.authenticate(conn, token) if token.startswith("hre_") else None
+            if actor is None:
+                return 401, {"error": "invalid_token"}
+            try:
+                return 200, service.persona_context(conn, actor)
+            except service.HreError as e:
+                return 404, {"error": "no_persona", "message": str(e)}
+
+    status, body = await anyio.to_thread.run_sync(run)
+    headers = {"Cache-Control": "no-store"}
+    if status == 401:
+        headers["WWW-Authenticate"] = 'Bearer error="invalid_token"'
+    return JSONResponse(body, status_code=status, headers=headers)
+
+
 def build_server(auth_url: str | None = None) -> MCPServer:
     kwargs: dict[str, Any] = {}
     provider = None
@@ -74,6 +104,7 @@ def build_server(auth_url: str | None = None) -> MCPServer:
     mcp = MCPServer("human-relation-emurator", instructions=INSTRUCTIONS, **kwargs)
     if provider:
         mcp.custom_route(oauth.LOGIN_PATH, methods=["GET", "POST"])(provider.login)
+    mcp.custom_route(PERSONA_CONTEXT_PATH, methods=["GET"])(persona_context_route)
 
     @mcp.tool()
     def list_workspaces() -> dict:
@@ -90,6 +121,14 @@ def build_server(auth_url: str | None = None) -> MCPServer:
     def get_entity(entity_id: Id) -> dict:
         """人物カード: 識別子、現在有効な主張（確度順）、関係とその文脈・強さ（0〜1）、強い順の相手（ties）を返す。"""
         return _call(service.get_entity, entity_id=entity_id)
+
+    @mcp.tool()
+    def get_persona_context() -> dict:
+        """自分（このトークンの AITuber）の設定と人間関係をまとめて返す。台本・セリフ・トークを作るときの前提に使う。
+
+        profile は一人称・口調などの設定、relationships は相手ごとの関係・呼び方・共有している文脈（強い順）。
+        """
+        return _call(lambda c, a: service.persona_context(c, a))
 
     @mcp.tool()
     def list_clusters(workspace: str | None = None) -> dict:
