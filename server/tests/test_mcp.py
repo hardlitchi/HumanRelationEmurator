@@ -60,6 +60,19 @@ def test_agent_works_through_mcp(server_url, world, conn):
             r = await c.call_tool("record_fact", {"field": "一人称", "value": "おれ", "epistemic": "stated",
                                                   "entity_id": me, "source_id": src})
             assert r.is_error and "trusted source" in r.content[0].text
+            assert "review_url" in r.content[0].text   # 次に何をすればよいかも返す
+
+            # 設定資料を出典にし、人が信頼済みにすれば、エージェントでも人格フィールドを書ける
+            doc = _data(await c.call_tool("add_source", {"kind": "document", "title": "A の設定資料 v1",
+                                                         "content": "一人称はわたし"}))
+            assert doc["review_url"].endswith("/s/" + doc["source_id"])
+            r = await c.call_tool("record_fact", {"field": "一人称", "value": "わたし", "epistemic": "stated",
+                                                  "entity_id": me, "source_id": doc["source_id"]})
+            assert r.is_error
+            service.set_source_trusted(conn, world.owner_human, doc["source_id"], True)
+            r = await c.call_tool("record_fact", {"field": "一人称", "value": "わたし", "epistemic": "stated",
+                                                  "entity_id": me, "source_id": doc["source_id"]})
+            assert not r.is_error, r.content
 
             card = _data(await c.call_tool("get_entity", {"entity_id": me}))
             assert card["relationships"][0]["other_name"] == "リスナーX"
