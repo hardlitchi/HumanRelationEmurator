@@ -71,8 +71,21 @@ def _dt(v: Any) -> str:
 
 
 templates.env.filters["dt"] = _dt
+
+# 識別子の値が http(s) の URL なら人物カードでリンクにする。scheme ごとの見出し（無ければ URL をそのまま出す）
+LINK_LABELS = {"stackchan": "スタックチャンで開く"}
+
+
+def _link(v: Any) -> str:
+    """http(s) の URL ならそのまま、それ以外は ""（javascript: などはリンクにしない）。"""
+    if not isinstance(v, str) or not v.lower().startswith(("http://", "https://")):
+        return ""
+    return v if urlsplit(v).netloc else ""
+
+
+templates.env.filters["link"] = _link
 templates.env.filters["pct"] = lambda v: "—" if v is None else f"{round(float(v) * 100)}"
-templates.env.globals.update(EPISTEMIC=EPISTEMIC_LABELS, KINDS=KIND_LABELS, WS_KINDS=WS_KIND_LABELS,
+templates.env.globals.update(LINK_LABELS=LINK_LABELS, EPISTEMIC=EPISTEMIC_LABELS, KINDS=KIND_LABELS, WS_KINDS=WS_KIND_LABELS,
                              SCOPES=SCOPE_LABELS,
                              ACTIONS=ACTION_LABELS, TARGETS=TARGET_LABELS,
                              CHANNELS=CHANNEL_LABELS, DEPTHS=DEPTH_LABELS)

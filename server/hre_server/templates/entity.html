@@ -31,7 +31,9 @@
 {% if e.identifiers %}
 <ul class="chips">
   {% for i in e.identifiers %}
-  <li><span class="muted">{{ i.scheme }}</span> {{ i.value }}
+  <li><span class="muted">{{ i.scheme }}</span>
+    {% set url = i.value|link %}
+    {% if url %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer" title="{{ url }}">{{ LINK_LABELS.get(i.scheme, url) }} ↗</a>{% else %}{{ i.value }}{% endif %}
     {% if ws.can_write %}
     <form method="post" action="/e/{{ e.id }}/identifiers/remove" class="chip-x">
       <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}"><input type="hidden" name="scheme" value="{{ i.scheme }}">
