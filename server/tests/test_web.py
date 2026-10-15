@@ -235,3 +235,16 @@ def test_clusters_page(app, conn, world):
     page = c.get(f"/w/{world.a}/clusters").text
     assert "グループ 1" in page and "常連1" in page and "常連2" in page
     assert "グループ（推定）" in c.get(f"/e/{a}").text
+
+
+def test_url_identifiers_link_out(app, conn, world):
+    """スタックチャンなど別のアプリの画面の URL を識別子に入れると、人物カードからそこへ移れる。"""
+    pid = service.create_entity(conn, world.owner_human, "person", "リンク先さん", world.a)["id"]
+    service.add_identifier(conn, world.owner_human, pid, "stackchan", "https://stackchan.lan/ui/#people/p1")
+    service.add_identifier(conn, world.owner_human, pid, "web", "https://example.com/me")
+    service.add_identifier(conn, world.owner_human, pid, "x", "javascript:alert(1)")
+    card = _login(app, world.tokens["owner"]).get(f"/e/{pid}").text
+    assert '<a href="https://stackchan.lan/ui/#people/p1" target="_blank" rel="noopener noreferrer"' in card
+    assert "スタックチャンで開く" in card
+    assert '<a href="https://example.com/me"' in card
+    assert 'href="javascript:' not in card and "javascript:alert(1)" in card
