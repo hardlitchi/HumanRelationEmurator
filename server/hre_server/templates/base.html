@@ -14,6 +14,7 @@
   <a class="brand" href="/">HRE</a>
   {% if me %}
   <nav>
+    <a href="/inbox" class="nav-inbox">確認{% if review_count %} <span class="badge">{{ review_count }}</span>{% endif %}</a>
     <a href="/">ワークスペース</a>
     <a href="/activity">更新履歴</a>
     <a href="/connectors">AI 連携</a>
@@ -23,7 +24,7 @@
   {% endif %}
 </header>
 <main>
-  {% if flash %}<p class="flash ok">{{ flash }}</p>{% endif %}
+  {% block flash %}{% if flash %}<p class="flash ok">{{ flash }}</p>{% endif %}{% endblock %}
   {% if error %}<p class="flash err">{{ error }}</p>{% endif %}
   {% block body %}{% endblock %}
 </main>

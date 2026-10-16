@@ -39,3 +39,10 @@ document.querySelectorAll(".fact-form").forEach((form) => {
   field.addEventListener("change", update);
   update();
 });
+
+// 確認画面: PC ではキーでも決められる（y = はい / n = いいえ / l = あとで）
+document.addEventListener("keydown", (ev) => {
+  if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.target.closest("input, textarea, select")) return;
+  const el = document.querySelector(`.decide [data-key="${ev.key}"]`);
+  if (el) el.click();
+});

@@ -7,6 +7,7 @@
 - 権限は MCP と同じ（ワークスペースごとの read / write / sensitive_read、管理者）
 - 人が書いた主張は「人間による書き込み」なので、人格フィールドや管理者関係もここから書ける
 - AI 連携: claude.ai などの OAuth 接続の許可画面（/connect）と、接続の一覧・取り消し（/connectors）
+- 確認（/inbox）: 人が決めること（エージェントが書けなかった書き込み・未確認の設定資料・提案された項目）を1件ずつ
 """
 
 from __future__ import annotations
@@ -182,6 +183,7 @@ def page(handler):
             except errors.DataError:   # UUID の形をしていない ID など
                 name, ctx = "error.html", {"message": "見つかりません"}
             cookie = request.cookies[COOKIE]
+            ctx.setdefault("review_count", service.count_reviews(conn, actor))   # ヘッダーの「確認」のバッジ
             ctx.update(request=request, me=actor, csrf=request.app.state.sessions.csrf(cookie),
                        flash=request.query_params.get("ok"), error=request.query_params.get("err"))
             return templates.TemplateResponse(request, name, ctx,
@@ -460,6 +462,59 @@ def trust_source(request, conn, me, form):
 
 
 # ---------------------------------------------------------------------------
+# 確認（受信箱）: 人が決めることを1件ずつ、1タップで
+# 「あとで」は URL の skip に積むだけ（DB には残さない）。次に開けばまた出てくる
+# ---------------------------------------------------------------------------
+
+def _skips(raw: str) -> list[str]:
+    return [k for k in raw.split(",") if len(k) <= 80 and k[:2] in ("w:", "s:", "f:")][:200]
+
+
+def _done(raw: str) -> int:
+    return int(raw) if raw.isdigit() else 0
+
+
+@page
+def inbox(request, conn, me):
+    skip = _skips(request.query_params.get("skip", ""))
+    done = _done(request.query_params.get("done", ""))
+    items = service.list_reviews(conn, me)
+    queue = [i for i in items if i["key"] not in skip]
+    total = done + len(items)
+    return "inbox.html", {"item": queue[0] if queue else None, "left": len(queue), "skipped": len(items) - len(queue),
+                          "done": done, "total": total, "skip": ",".join(skip), "review_count": len(items),
+                          "undo": request.query_params.get("undo")}
+
+
+DECIDED = {"w": {"approve": "書き込みました", "reject": "書き込まずに閉じました"},
+           "s": {"approve": "信頼済みにしました", "reject": "信頼しないことにしました"},
+           "f": {"approve": "項目を承認しました", "reject": "項目を使わないことにしました", "merge": "項目を統合しました"}}
+
+
+@action
+def inbox_decide(request, conn, me, form):
+    key, decision = str(form["key"]), str(form["decision"])
+    skip = ",".join(_skips(str(form.get("skip", ""))))
+    done = _done(str(form.get("done", "")))
+    try:
+        service.decide_review(conn, me, key, decision, _opt(form, "merged_into"))
+    except service.HreError as e:
+        return _back(request, "/inbox", err=str(e), skip=skip, done=str(done))
+    return _back(request, "/inbox", ok=DECIDED[key[0]][decision], skip=skip, done=str(done + 1), undo=key)
+
+
+@action
+def inbox_undo(request, conn, me, form):
+    skip = ",".join(_skips(str(form.get("skip", ""))))
+    done = _done(str(form.get("done", "")))
+    try:
+        service.undo_review(conn, me, str(form["key"]))
+    except service.HreError as e:
+        return _back(request, "/inbox", err=str(e), skip=skip, done=str(done))
+    return _back(request, "/inbox", ok="元に戻しました", skip=skip, done=str(max(done - 1, 0)))
+
+
+# ---------------------------------------------------------------------------
 # 管理者
 # ---------------------------------------------------------------------------
 
@@ -640,6 +695,9 @@ def create_app(secret: str | None = None, secure_cookies: bool = True,
         Route("/logout", logout, methods=["POST"]),
         Route("/", home),
         Route("/activity", activity),
+        Route("/inbox", inbox),
+        Route("/inbox/decide", inbox_decide, methods=["POST"]),
+        Route("/inbox/undo", inbox_undo, methods=["POST"]),
         Route("/w/{key}", workspace),
         Route("/w/{key}/entities", create_entity, methods=["POST"]),
         Route("/w/{key}/sources", sources),

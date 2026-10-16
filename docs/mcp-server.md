@@ -19,7 +19,7 @@ AIエージェント（各 AITuber、管理者用エージェントなど）が�
 | `list_relation_types` | 関係の種類の一覧 |
 | `list_clusters` | 関係の強さから推定したグループ（「自分」は含まない） |
 | `add_source` / `get_source` | 原文（会話・配信コメント・設定資料等）の保存と参照。HTTP では信頼済みにしてもらうための `review_url` も返す |
-| `record_fact` / `retract_fact` | 人・関係についての主張の記録と取り消し |
+| `record_fact` / `retract_fact` | 人・関係についての主張の記録と取り消し。人格フィールド・管理者関係を信頼済みの出典なしで書こうとすると拒否され、人の確認待ちに入る（Web UI の「確認」で承認されると書き込まれる） |
 | `add_relationship` / `end_relationship` | 関係の追加と終了 |
 | `record_interaction` | やり取りの記録（関係の強さの材料） |
 | `get_persona_context` | 自分（このトークンの AITuber）の設定と人間関係をまとめて返す。台本・セリフ・トーク生成の前提に使う |

@@ -1,6 +1,12 @@
 {% extends "base.html" %}
 {% block title %}ワークスペース{% endblock %}
 {% block body %}
+{% if review_count %}
+<a href="/inbox" class="card inbox-cta">
+  <span><strong>確認待ちが {{ review_count }} 件あります</strong><br><span class="muted small">1件ずつ、タップで決められます</span></span>
+  <span class="cta-go">はじめる →</span>
+</a>
+{% endif %}
 <h1>ワークスペース</h1>
 <p class="muted">ワークスペースは「誰の視点の人間関係か」の単位です。</p>
 {% if not workspaces %}
