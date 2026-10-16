@@ -6,6 +6,7 @@
   トークンを rotate / revoke すると既存のセッションも無効になる
 - 権限は MCP と同じ（ワークスペースごとの read / write / sensitive_read、管理者）
 - 人が書いた主張は「人間による書き込み」なので、人格フィールドや管理者関係もここから書ける
+- AI 連携: claude.ai などの OAuth 接続の許可画面（/connect）と、接続の一覧・取り消し（/connectors）
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from . import service
+from . import oauth, service
 from .db import pool
 
 HERE = Path(__file__).resolve().parent
@@ -533,6 +534,87 @@ def admin_post(request, conn, me, form):
 
 
 # ---------------------------------------------------------------------------
+# AI 連携（OAuth の許可画面と接続の管理）
+# ---------------------------------------------------------------------------
+
+def _public_url(request: Request) -> str:
+    return (os.environ.get("HRE_PUBLIC_URL") or str(request.base_url)).rstrip("/")
+
+
+def _form_action_origin(redirect_uri: str) -> str:
+    """許可後に戻す先。form-action 'self' のままだと、POST の後のクライアントへのリダイレクトをブラウザが止める。"""
+    u = urlsplit(redirect_uri)
+    if u.scheme in ("http", "https"):
+        return f"{u.scheme}://{u.netloc}"
+    return f"{u.scheme}:"   # cursor:// などネイティブアプリのカスタムスキーム
+
+
+def _connect_page(request: Request, conn: Connection, me: service.Actor, request_id: str,
+                  error: str | None = None) -> Response:
+    pending = oauth.load_request(conn, request_id)
+    if pending is None:
+        return templates.TemplateResponse(request, "error.html", {
+            "message": "この接続リクエストは期限切れか使用済みです。AI アプリ側からもう一度接続し直してください。",
+            "me": me}, status_code=400)
+    redirect_uri = pending["params"]["redirect_uri"]
+    actors = oauth.connectable_actors(conn, me)
+    ctx = {"me": me, "request_id": request_id, "client_name": pending["client_name"],
+           "host": urlsplit(redirect_uri).netloc or redirect_uri, "actors": actors,
+           "default_actor": actors[0]["id"], "scopes": oauth.SCOPES, "error": error, "flash": None,
+           "csrf": request.app.state.sessions.csrf(request.cookies[COOKIE])}
+    resp = templates.TemplateResponse(request, "connect.html", ctx, status_code=400 if error else 200)
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; "
+        f"form-action 'self' {_form_action_origin(redirect_uri)}; base-uri 'none'")
+    return resp
+
+
+def _login_redirect(request: Request) -> RedirectResponse:
+    nxt = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+    return RedirectResponse("/login?" + urlencode({"next": nxt}), status_code=303)
+
+
+async def connect(request: Request) -> Response:
+    """OAuth の許可画面。ログイン中の人が、接続する身元と書き込みの可否を選んで許可する。"""
+    form = await request.form() if request.method == "POST" else None
+
+    def run() -> Response:
+        with pool().connection() as conn, conn.transaction():
+            try:
+                me = _current(conn, request)
+            except LoginRequired:
+                return _login_redirect(request)
+            if form is None:
+                return _connect_page(request, conn, me, request.query_params.get("request", ""))
+            request_id = str(form.get("request", ""))
+            expected = request.app.state.sessions.csrf(request.cookies[COOKIE])
+            if not hmac.compare_digest(str(form.get("csrf", "")), expected):
+                return Response("CSRF token mismatch", status_code=403)
+            if form.get("decision") != "allow":
+                url = oauth.deny(conn, request_id)
+                return RedirectResponse(url, status_code=303) if url else _back(request, "/connectors")
+            scopes = ["read", "write"] if form.get("write") == "on" else ["read"]
+            try:
+                url = oauth.approve(conn, me, request_id, str(form.get("actor", "")), scopes)
+            except service.HreError as e:
+                return _connect_page(request, conn, me, request_id, error=str(e))
+            return RedirectResponse(url, status_code=303)
+    return await anyio.to_thread.run_sync(run)
+
+
+@page
+def connectors(request, conn, me):
+    return "connectors.html", {"mcp_url": _public_url(request) + "/mcp",
+                               "connections": oauth.list_connections(conn, me)}
+
+
+@action
+def revoke_connection(request, conn, me, form):
+    oauth.revoke_connection(conn, me, str(form["family"]))
+    return _back(request, "/connectors", ok="接続を取り消しました")
+
+
+# ---------------------------------------------------------------------------
 # アプリ
 # ---------------------------------------------------------------------------
 
@@ -572,6 +654,9 @@ def create_app(secret: str | None = None, secure_cookies: bool = True,
         Route("/r/{id}/end", end_relationship, methods=["POST"]),
         Route("/s/{id}", source),
         Route("/s/{id}/trust", trust_source, methods=["POST"]),
+        Route("/connect", connect, methods=["GET", "POST"]),
+        Route("/connectors", connectors),
+        Route("/connectors/revoke", revoke_connection, methods=["POST"]),
         Route("/admin/fields", admin_fields),
         Route("/admin/fields/{key}", field_status, methods=["POST"]),
         Route("/admin/access", admin_access, methods=["GET"]),

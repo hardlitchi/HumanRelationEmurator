@@ -3,7 +3,7 @@
   stdio:            HRE_TOKEN=... python -m hre_server.mcp_app
   streamable HTTP:  python -m hre_server.mcp_app --http --host 0.0.0.0 --port 8000
                     （Authorization: Bearer <token> で認証。TLS はリバースプロキシで終端する）
-                    claude.ai など OAuth でしか接続できないクライアントには OAuth 認可サーバーも兼ねる（oauth.py）
+                    claude.ai など OAuth で接続するクライアントには OAuth 認可サーバーも兼ねる（oauth.py。許可画面は Web UI）
 """
 
 from __future__ import annotations
@@ -52,12 +52,15 @@ Id = Annotated[str, Field(description="UUID")]
 Epistemic = Literal["stated", "observed", "reported", "inferred"]
 
 
-def _call(fn: Callable[..., Any], **kwargs: Any) -> Any:
+def _call(fn: Callable[..., Any], _write: bool = False, **kwargs: Any) -> Any:
     with pool().connection() as conn:
         token = get_access_token()
         actor_id = token.subject if token else _stdio_actor_id
         if actor_id is None:
             raise ToolError("認証されていません")
+        if _write and token and oauth.read_only(token.scopes):
+            raise ToolError("この接続は閲覧だけを許可されています。書き込むには Web UI の「AI 連携」で接続し直し、"
+                            "許可画面で「記録と更新も許可する」にチェックしてください")
         try:
             return fn(conn, service.load_actor(conn, actor_id), **kwargs)
         except service.HreError as e:
@@ -102,8 +105,6 @@ def build_server(auth_url: str | None = None) -> MCPServer:
                                       client_registration_options=ClientRegistrationOptions(enabled=True),
                                       revocation_options=RevocationOptions(enabled=True))
     mcp = MCPServer("human-relation-emurator", instructions=INSTRUCTIONS, **kwargs)
-    if provider:
-        mcp.custom_route(oauth.LOGIN_PATH, methods=["GET", "POST"])(provider.login)
     mcp.custom_route(PERSONA_CONTEXT_PATH, methods=["GET"])(persona_context_route)
 
     @mcp.tool()
@@ -145,18 +146,18 @@ def build_server(auth_url: str | None = None) -> MCPServer:
                           description='[{"scheme": "youtube", "value": "@handle"}] など。scheme は email/x/youtube/twitch/discord/name 等')] = None,
                       ) -> dict:
         """人・組織・グループを作る。同じ識別子の人が既にいればエラーで既存 ID を返す。"""
-        return _call(service.create_entity, kind=kind, display_name=display_name, workspace=workspace,
+        return _call(service.create_entity, _write=True, kind=kind, display_name=display_name, workspace=workspace,
                      identifiers=identifiers)
 
     @mcp.tool()
     def add_identifier(entity_id: Id, scheme: str, value: str) -> dict:
         """既存の人に識別子（別のSNSアカウント、呼び名など）を追加する。"""
-        return _call(service.add_identifier, entity_id=entity_id, scheme=scheme, value=value)
+        return _call(service.add_identifier, _write=True, entity_id=entity_id, scheme=scheme, value=value)
 
     @mcp.tool()
     def merge_entities(from_id: Id, into_id: Id) -> dict:
         """同一人物が2つのノードになっていたら統合する（from の記録を into に付け替える）。"""
-        return _call(service.merge_entities, from_id=from_id, into_id=into_id)
+        return _call(service.merge_entities, _write=True, from_id=from_id, into_id=into_id)
 
     @mcp.tool()
     def resolve_field(name: Annotated[str, Field(description="使いたいフィールド名（日本語・英語・表記ゆれ可）")]) -> dict:
@@ -177,14 +178,14 @@ def build_server(auth_url: str | None = None) -> MCPServer:
                       aliases: list[str] | None = None, enum_options: list[str] | None = None,
                       sensitivity: Literal["normal", "personal", "sensitive"] = "personal") -> dict:
         """新しいフィールドを提案する。resolve_field で見つからなかったときだけ使う。提案状態でもすぐ使える。"""
-        return _call(service.propose_field, key=key, label=label, value_type=value_type, applies_to=applies_to,
+        return _call(service.propose_field, _write=True, key=key, label=label, value_type=value_type, applies_to=applies_to,
                      cardinality=cardinality, description=description, aliases=aliases,
                      enum_options=enum_options, sensitivity=sensitivity)
 
     @mcp.tool()
     def add_field_alias(field_key: str, alias: str) -> dict:
         """既存フィールドに別名を登録する（次回から resolve_field で解決される）。"""
-        return _call(service.add_field_alias, field_key=field_key, alias=alias)
+        return _call(service.add_field_alias, _write=True, field_key=field_key, alias=alias)
 
     @mcp.tool()
     def list_relation_types() -> dict:
@@ -203,7 +204,7 @@ def build_server(auth_url: str | None = None) -> MCPServer:
         保存した出典は「未確認」。人格フィールドや管理者関係の根拠にするには、review_url を人に渡して
         Web UI で「信頼済みにする」を押してもらう（エージェント自身は信頼済みにできない）。
         """
-        result = _call(service.add_source, kind=kind, content=content, workspace=workspace, uri=uri, title=title,
+        result = _call(service.add_source, _write=True, kind=kind, content=content, workspace=workspace, uri=uri, title=title,
                        occurred_at=occurred_at)
         if review_base:
             result["review_url"] = review_base + result["source_id"]
@@ -223,27 +224,27 @@ def build_server(auth_url: str | None = None) -> MCPServer:
                     source_id: Id | None = None, valid_from: str | None = None, valid_to: str | None = None,
                     note: str | None = None) -> dict:
         """人・組織（entity_id）または関係（relationship_id）について分かったことを1件記録する。"""
-        return _call(service.record_fact, field=field, value=value, epistemic=epistemic, entity_id=entity_id,
+        return _call(service.record_fact, _write=True, field=field, value=value, epistemic=epistemic, entity_id=entity_id,
                      relationship_id=relationship_id, confidence=confidence, source_id=source_id,
                      valid_from=valid_from, valid_to=valid_to, note=note)
 
     @mcp.tool()
     def retract_fact(fact_id: Id, reason: str | None = None) -> dict:
         """誤っていた主張を取り消す（履歴は残る）。変化した事実は取り消さず、新しい主張を valid_from 付きで足す。"""
-        return _call(service.retract_fact, fact_id=fact_id, reason=reason)
+        return _call(service.retract_fact, _write=True, fact_id=fact_id, reason=reason)
 
     @mcp.tool()
     def add_relationship(relation_type: Annotated[str, Field(description="list_relation_types のキーか別名")],
                          source_entity_id: Id, target_entity_id: Id, valid_from: str | None = None,
                          source_id: Id | None = None) -> dict:
         """2者の関係を追加する。有向の関係は source → target の向き（例: listener_of はリスナー → 配信者）。"""
-        return _call(service.add_relationship, relation_type=relation_type, source_entity_id=source_entity_id,
+        return _call(service.add_relationship, _write=True, relation_type=relation_type, source_entity_id=source_entity_id,
                      target_entity_id=target_entity_id, valid_from=valid_from, source_id=source_id)
 
     @mcp.tool()
     def end_relationship(relationship_id: Id, valid_to: Annotated[str, Field(description="YYYY-MM-DD")]) -> dict:
         """関係が終わったことを記録する（退職、グループ脱退など）。"""
-        return _call(service.end_relationship, relationship_id=relationship_id, valid_to=valid_to)
+        return _call(service.end_relationship, _write=True, relationship_id=relationship_id, valid_to=valid_to)
 
     @mcp.tool()
     def record_interaction(occurred_at: Annotated[str, Field(description="ISO 8601 日時")],
@@ -255,7 +256,7 @@ def build_server(auth_url: str | None = None) -> MCPServer:
                            depth: Annotated[int | None, Field(ge=1, le=3, description="1:挨拶 2:用件 3:深い会話")] = None,
                            ended_at: str | None = None, source_id: Id | None = None) -> dict:
         """やり取りを記録する。関係の強さはここから算出される。"""
-        return _call(service.record_interaction, occurred_at=occurred_at, channel=channel,
+        return _call(service.record_interaction, _write=True, occurred_at=occurred_at, channel=channel,
                      participants=participants, workspace=workspace, summary=summary, depth=depth,
                      ended_at=ended_at, source_id=source_id)
 

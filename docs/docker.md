@@ -9,7 +9,7 @@ TLS は外部のリバースプロキシ（VPS の nginx・Caddy・Cloudflare Tu
 | `db` | PostgreSQL 16。データは `db-data` ボリューム | なし |
 | `mcp` | `hre-mcp --http`。エンドポイントは `/mcp` | なし |
 | `web` | `hre-web` | なし |
-| `proxy` | Caddy（http のみ）。`/mcp`・`/api/*` と OAuth（`/.well-known/oauth-*`・`/authorize`・`/token`・`/register`・`/revoke`・`/oauth/*`）を `mcp` へ、それ以外を `web` へ | `127.0.0.1:${HRE_PORT}` |
+| `proxy` | Caddy（http のみ）。`/mcp`・`/api/*` と OAuth（`/.well-known/oauth-*`・`/authorize`・`/token`・`/register`・`/revoke`）を `mcp` へ、それ以外（許可画面 `/connect` を含む）を `web` へ | `127.0.0.1:${HRE_PORT}` |
 
 ## 1. 設定ファイルを作る
 

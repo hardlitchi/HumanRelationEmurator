@@ -2,7 +2,7 @@
 
 AIエージェント（各 AITuber、管理者用エージェントなど）が人間関係グラフを読み書きするための MCP サーバー。コードは [`server/`](../server)。
 
-- 認証: エージェントごとに発行するトークン（DB にはハッシュだけを保存）。`Authorization: Bearer hre_...` で直接送るか、OAuth（claude.ai のカスタムコネクタ向け）の認可画面で入力する
+- 認証: OAuth（claude.ai・ChatGPT・Claude Code など。URL を登録して Web UI の許可画面で「許可する」だけ）か、エージェントごとに発行するトークン（DB にはハッシュだけを保存）を `Authorization: Bearer hre_...` で直接送る
 - 権限: トークンの持ち主（actor）がワークスペースごとに持つ `read` / `write` / `sensitive_read`
 - 記録者: 書き込みの `recorded_by` は常にトークンの持ち主。エージェントが他人を名乗ることはできない
 
@@ -87,14 +87,17 @@ hre-mcp --http --host 127.0.0.1 --port 8000
 - TLS は Caddy や nginx などのリバースプロキシで終端し、サーバー自体は 127.0.0.1 で待ち受ける
 - `HRE_ALLOWED_HOSTS` は DNS リバインディング対策の Host ヘッダ許可リスト（カンマ区切り）
 
-### OAuth（claude.ai のカスタムコネクタ）
+### OAuth（claude.ai・ChatGPT・Claude Code などのコネクタ）
 
-claude.ai のカスタムコネクタは固定トークンを送れないことが多いので、MCP サーバーが OAuth の認可サーバーも兼ねる（[`server/hre_server/oauth.py`](../server/hre_server/oauth.py)）。手順は [README](../README.md#claudeai-から使う)。
+MCP サーバーが OAuth の認可サーバーも兼ねる（[`server/hre_server/oauth.py`](../server/hre_server/oauth.py)）。AI 側に `https://<ドメイン>/mcp` を登録すると Web UI の許可画面が開き、許可するだけで接続できる。手順は [README](../README.md#ai-アシスタントから使うコネクタ)。
 
 - メタデータ: `/.well-known/oauth-protected-resource/mcp` と `/.well-known/oauth-authorization-server`（発行者は `HRE_PUBLIC_URL`）
 - 動的クライアント登録 `/register`、認可 `/authorize`（PKCE S256 必須）、トークン `/token`、取り消し `/revoke`
-- 認可画面 `/oauth/login` で人が `hre_` トークンを入力し、その持ち主（actor）として認可する。アクセストークン `hrea_`（1時間）とリフレッシュトークン `hrer_`（90日、使うたびに取り替え）を発行する
-- 発行したものはすべて入力した `hre_` トークンに結び付く。そのトークンを rotate / revoke すると、OAuth で出したトークンも使えなくなる
+- `/authorize` は Web UI の許可画面 `/connect` に転送する。Web UI にログインしている人（未ログインならログイン画面を挟む）が、**接続する身元**と**書き込みの可否**を選んで許可する
+  - 身元: 管理者は自分か有効なエージェントの誰か、それ以外の人は自分だけ。AITuber ごとのエージェントを選べば、その AITuber の権限・視点で動き、`recorded_by` もそのエージェントになる
+  - 書き込み: 外すと scope が `read` だけになり、書き込み系のツールはエラーを返す。リフレッシュで `write` に広げることはできない
+- アクセストークン `hrea_`（1時間）とリフレッシュトークン `hrer_`（90日、使うたびに取り替え）を発行する
+- 発行したものは選んだ身元の、許可した時点のトークンに結び付く。その身元のトークンを rotate / revoke すると OAuth の接続も切れる。接続ごとの取り消しは Web UI の「AI 連携」画面か `/revoke`
 - 状態は DB の `hre.oauth_*` 表に置く（[`db/oauth.sql`](../db/oauth.sql)）。`hre-mcp --http` が起動時に毎回適用するので、既存の DB でも手作業は要らない
 
 ### 手元で stdio として動かす

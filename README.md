@@ -25,49 +25,53 @@ docker compose up -d --build
 
 詳しくは [docs/docker.md](docs/docker.md)。
 
-## claude.ai から使う
+## AI アシスタントから使う（コネクタ）
 
-claude.ai（Web・スマホアプリ・デスクトップアプリ）の「カスタムコネクタ」に MCP サーバーを登録すると、チャットから人間関係グラフを読み書きできる。claude.ai のサーバーがインターネット越しに `https://<HRE_DOMAIN>/mcp` へ接続するので、外部のリバースプロキシで HTTPS 公開済みであることが前提。
+Claude（claude.ai・デスクトップ・スマホ）・ChatGPT・Claude Code などに MCP サーバー `https://<HRE_DOMAIN>/mcp` を登録すると、チャットやエージェントから人間関係グラフを読み書きできる。AI 側のサーバーがインターネット越しに接続するので、外部のリバースプロキシで HTTPS 公開済みであることが前提。
 
-接続は OAuth で行う。claude.ai が接続を始めるとこのサーバーの認可画面が開き、そこに `hre_` トークンを入力すると、そのトークンの持ち主として読み書きできるようになる。
+接続は OAuth で行う。AI 側で接続を始めると Web UI の許可画面が開き、**接続する身元**を選んで **許可する** を押すだけでつながる（トークンの入力は要らない）。Web UI の **AI 連携** 画面に、接続先 URL・AI ごとの手順・接続中のアプリ（取り消しボタン付き）がまとまっている。
 
-### 1. claude.ai 用のトークンを作る
+### 1. 身元（エージェント）を用意する
 
-Web UI の「アクセス管理」で claude.ai 用のエージェントを追加してトークン（`hre_...`）を発行し、使わせたいワークスペースに `read`（書かせるなら `write` も）を付ける。コマンドで作るなら:
+AITuber やエージェントごとに、Web UI の「アクセス管理」でエージェントを追加し、使わせたいワークスペースに `read`（書かせるなら `write` も）を付けておく（AITuber なら `hre-admin add-persona` でまとめて作れる）。ここで表示されるトークンは、OAuth で接続するだけなら控えなくてよい。
 
-```sh
-docker compose exec mcp hre-admin create-actor claude-ai agent   # トークンが1度だけ表示される
-docker compose exec mcp hre-admin grant claude-ai owner read,write
-```
+エージェントを分けておくと、記録者（`recorded_by`）でどの AI から書いた内容か見分けられ、その AI だけ止めることもできる。
 
-claude.ai 専用に分けておくと、記録者（`recorded_by`）で claude.ai から書いた内容を見分けられ、そのトークンだけ無効にもできる。
+### 2. AI 側に登録する
 
-### 2. カスタムコネクタを追加する
+| AI | 登録方法 |
+|---|---|
+| Claude（claude.ai / デスクトップ / スマホ） | **Customize > Connectors** → **Add custom connector** で URL に `https://<HRE_DOMAIN>/mcp`。OAuth Client ID / Secret は空のまま **Add** → **Connect**（Team / Enterprise では Owner が **Organization settings > Connectors** から追加） |
+| ChatGPT | 設定 → アプリとコネクタ（開発者モードを有効化）→ 作成 → URL を入力し、認証は OAuth |
+| Claude Code | `claude mcp add --transport http hre https://<HRE_DOMAIN>/mcp` のあと `/mcp` で認証（ブラウザで許可画面が開く） |
+| OAuth 非対応のツール・サーバー | エージェントのトークンを `Authorization: Bearer hre_...` で送る（[docs/mcp-server.md](docs/mcp-server.md)） |
 
-1. claude.ai で **Customize > Connectors** を開き、**Add custom connector** を押す（Team / Enterprise プランでは Owner が **Organization settings > Connectors** から追加する）
-2. **MCP server URL** に `https://<HRE_DOMAIN>/mcp`
-3. 認証の選択肢が出る場合は **Sign in now**、OAuth クライアントは **Register automatically** を選ぶ（OAuth Client ID / Secret の欄は空のまま）
-4. **Add** で保存し、**Connect** を押す
-5. 開いた「HumanRelationEmurator への接続」画面で、1 のトークンを入力して **接続を許可する**
+### 3. 許可画面で許可する
 
-### 3. チャットで使う
+1. 開いた画面で Web UI にログインしていなければ、人間用のトークンでログインする（以後 30 日はログイン済み）
+2. 「接続する身元」で 1 のエージェントを選ぶ（管理者は全エージェントから選べる。それ以外の人は自分だけ）
+3. 閲覧だけにするなら「記録と更新も許可する」を外す
+4. **許可する**
 
-チャットの **+ > Connectors** で有効にして、「〇〇さんについて覚えていることを教えて」「今日の配信で△△さんと話した内容を記録して」のように頼む。スマホの Claude アプリでも、同じアカウントで追加したコネクタがそのまま使える。
+### 4. チャットで使う
+
+Claude ならチャットの **+ > Connectors** で有効にして、「〇〇さんについて覚えていることを教えて」「今日の配信で△△さんと話した内容を記録して」のように頼む。スマホの Claude アプリでも、同じアカウントで追加したコネクタがそのまま使える。
 
 書き込み系のツールは毎回の承認を残しておくのがおすすめ（**Always allow** にしない）。
 
-人格フィールド（一人称・口調・背景設定など）と管理者関係（`operator_of`）は、エージェントからは信頼済みの出典がないと書けない。claude.ai で AITuber の設定を作るときは次の流れになる:
+人格フィールド（一人称・口調・背景設定など）と管理者関係（`operator_of`）は、エージェントからは信頼済みの出典がないと書けない。AI で AITuber の設定を作るときは次の流れになる:
 
-1. Claude に設定資料（キャラ設定・企画書など）を `add_source` で保存させる。返ってくる `review_url` を Claude がチャットに出す
+1. AI に設定資料（キャラ設定・企画書など）を `add_source` で保存させる。返ってくる `review_url` を AI がチャットに出す
 2. そのリンクを開き、内容を確かめて **信頼済みにする** を押す
-3. Claude にその出典を付けて人格フィールドを書かせる
+3. AI にその出典を付けて人格フィールドを書かせる
 
-配信コメントなどから人格が書き換わらないよう、信頼済みにできるのは人（Web UI）だけにしてある。創作の人間関係の出典の示し方は [docs/data-model.md](docs/data-model.md) の「創作の人間関係」を参照。
+配信コメントなどから人格が書き換わらないよう、信頼済みにできるのは人（Web UI）だけにしてある。許可画面で自分（人）を身元に選ぶとこの制限がかからないので、ふだんはエージェントを選ぶ。創作の人間関係の出典の示し方は [docs/data-model.md](docs/data-model.md) の「創作の人間関係」を参照。
 
 ### 接続を切る・やり直す
 
-- 1 のトークンを Web UI か `hre-admin rotate-token claude-ai` で再発行・無効化すると、claude.ai からの接続もすぐ使えなくなる。つなぎ直すときは claude.ai のコネクタでもう一度 **Connect** して新しいトークンを入れる
-- 認可画面で別のトークンを入れれば、そのトークンの持ち主（別の AITuber など）として接続できる
+- Web UI の **AI 連携** で、接続ごとに **取り消す** を押す
+- 身元のトークンを「アクセス管理」か `hre-admin rotate-token <name>` で再発行・無効化すると、その身元での接続はすべて切れる
+- つなぎ直すときは AI 側でもう一度 **Connect** する。別の身元を選べば、別の AITuber として接続できる
 
 ## データベース
 

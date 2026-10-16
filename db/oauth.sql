@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS hre.oauth_clients (
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
--- /authorize で受けて、人が hre_ トークンを入力するのを待っている認可リクエスト
+-- /authorize で受けて、人が Web UI の /connect で許可するのを待っている認可リクエスト
 CREATE TABLE IF NOT EXISTS hre.oauth_requests (
     id_hash     text PRIMARY KEY,
     client_id   text NOT NULL REFERENCES hre.oauth_clients(client_id) ON DELETE CASCADE,
@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS hre.oauth_requests (
 );
 
 -- 認可コード・アクセストークン・リフレッシュトークン。
+-- actor_id は接続先の身元（許可した人が選んだ actor）、approved_by は許可した人。
 -- actor_token_hash は発行時の actors.token_hash。トークンを rotate / revoke すると一致しなくなり、
 -- ここから発行したものもすべて使えなくなる（Web UI のセッションと同じ扱い）
 CREATE TABLE IF NOT EXISTS hre.oauth_grants (
@@ -34,3 +35,6 @@ CREATE TABLE IF NOT EXISTS hre.oauth_grants (
     created_at        timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS oauth_grants_family_idx ON hre.oauth_grants (family);
+
+-- 許可した人（Web UI の /connect でログインしていた人）。この列を足す前の行は NULL
+ALTER TABLE hre.oauth_grants ADD COLUMN IF NOT EXISTS approved_by uuid REFERENCES hre.actors(id) ON DELETE SET NULL;

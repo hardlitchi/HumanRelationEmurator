@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}AI 連携{% endblock %}
+{% block body %}
+<h1>AI 連携</h1>
+<p>Claude・ChatGPT などの AI アシスタントやエージェントから、人間関係グラフを読み書きできます（MCP サーバー）。
+  AI 側にこの URL を登録すると、この画面のログインと許可画面が開き、許可するだけで接続できます。</p>
+<section class="card">
+  <h2>接続先 URL</h2>
+  <input readonly value="{{ mcp_url }}" class="mono" data-select>
+  <dl class="small">
+    <dt>Claude（claude.ai・デスクトップ・スマホ）</dt>
+    <dd>設定 → コネクタ → カスタムコネクタを追加 → 上の URL を入力して「接続」。OAuth Client ID / Secret は空のまま</dd>
+    <dt>ChatGPT</dt>
+    <dd>設定 → アプリとコネクタ（開発者モードを有効化）→ 作成 → 上の URL を入力し、認証は OAuth</dd>
+    <dt>Claude Code・Gemini CLI・Cursor など</dt>
+    <dd>HTTP の MCP サーバーとして上の URL を追加すると、初回接続時にブラウザで許可画面が開きます
+      （例: <code>claude mcp add --transport http hre {{ mcp_url }}</code> のあと <code>/mcp</code> で認証）。
+      OAuth に対応していないツールや、KAGURA STAGE のようなサーバーは、エージェントの <code>hre_</code> トークンを
+      <code>Authorization: Bearer ...</code> で送ります{% if me.is_admin %}（トークンは<a href="/admin/access">アクセス管理</a>で発行）{% endif %}。</dd>
+  </dl>
+  <p class="muted small">AITuber ごとにエージェント（身元）を分けておくと、許可画面でそのエージェントを選ぶだけで、
+    その AITuber の視点・権限で動きます。記録者もそのエージェントになります。</p>
+</section>
+
+<h2>接続中のアプリ</h2>
+{% if connections %}
+<ul class="list">
+  {% for c in connections %}
+  <li>
+    <div class="row">
+      <span><strong>{{ c.client_name }}</strong> → {{ c.actor_name }}
+        <span class="tag {{ 'agent' if c.actor_kind == 'agent' else '' }}">{{ c.actor_kind }}</span>
+        {% if c.scopes and 'write' not in c.scopes %}<span class="tag">閲覧のみ</span>{% endif %}</span>
+      <form method="post" action="/connectors/revoke">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}">
+        <input type="hidden" name="family" value="{{ c.family }}">
+        <button class="danger" data-confirm="「{{ c.client_name }}」の接続を取り消しますか？">取り消す</button>
+      </form>
+    </div>
+    <div class="muted small">最終更新 {{ c.refreshed_at|dt }}{% if c.approved_by %} · 許可した人 {{ c.approved_by }}{% endif %}</div>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">まだ接続しているアプリはありません。</p>
+{% endif %}
+{% endblock %}

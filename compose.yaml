@@ -41,6 +41,8 @@ services:
     environment:
       DATABASE_URL: postgresql://hre:${POSTGRES_PASSWORD}@db:5432/hre
       HRE_WEB_SECRET: ${HRE_WEB_SECRET:?.env に HRE_WEB_SECRET を設定してください}
+      # 「AI 連携」画面に出す MCP の URL
+      HRE_PUBLIC_URL: ${HRE_PUBLIC_URL:-https://${HRE_DOMAIN}}
       HRE_ALLOWED_HOSTS: ${HRE_DOMAIN}
       HRE_TIMEZONE: ${HRE_TIMEZONE:-Asia/Tokyo}
       HRE_INSECURE_COOKIES: ${HRE_INSECURE_COOKIES:-0}
