@@ -129,11 +129,12 @@ def test_oauth_connection_acts_as_chosen_agent(base, server_url, world, browser)
     r = anon.get(f"{u.path}?{u.query}", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].startswith("/login?next=%2Fconnect%3Frequest%3D")
 
-    # 許可画面にはクライアント名と戻り先が出て、埋め込みは禁止。戻り先へのフォーム送信は許す
+    # 許可画面にはクライアント名と戻り先が出て、埋め込みは禁止
     page = browser.get(f"{u.path}?{u.query}")
     assert page.status_code == 200 and "Claude" in page.text and "claude.ai" in page.text
     csp = page.headers["content-security-policy"]
-    assert "frame-ancestors 'none'" in csp and "form-action 'self' https://claude.ai" in csp
+    # 戻り先がさらに別の場所へリダイレクトしても止めないよう、form-action は付けない
+    assert "frame-ancestors 'none'" in csp and "form-action" not in csp
     # 管理者はエージェントを身元に選べる
     assert world.agent_a.name in page.text and world.agent_b.name in page.text
 

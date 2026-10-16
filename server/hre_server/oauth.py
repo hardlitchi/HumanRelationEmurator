@@ -38,7 +38,7 @@ from .db import pool
 DDL = Path(__file__).resolve().parents[2] / "db" / "oauth.sql"
 CONSENT_PATH = "/connect"   # Web UI 側の許可画面
 
-REQUEST_SECONDS = 10 * 60
+REQUEST_SECONDS = 30 * 60   # 許可画面の前にログイン（トークン探し）を挟んでも間に合うように
 CODE_SECONDS = 5 * 60
 ACCESS_SECONDS = 60 * 60
 REFRESH_SECONDS = 90 * 24 * 60 * 60
