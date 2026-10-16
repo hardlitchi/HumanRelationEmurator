@@ -199,6 +199,16 @@
     </form>
   </details>
   {% endif %}
+  {% if me.is_admin and e.kind == 'person' and not e.is_self and ws.kind != 'shared' %}
+  <details class="card">
+    <summary>この人を「自分」にする（管理者）</summary>
+    <form method="post" action="/e/{{ e.id }}/self" class="stack">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}">
+      <p class="muted small">このワークスペースの視点の主にします。関係の強さは「自分」との強さで並び、グループ推定からは外れます。今の「自分」がいればその人は普通の人に戻ります。</p>
+      <button class="secondary" data-confirm="{{ e.display_name }} を「自分」にしますか？">「自分」にする</button>
+    </form>
+  </details>
+  {% endif %}
   {% if me.is_admin %}
   <details class="card danger-zone">
     <summary>完全削除（管理者）</summary>

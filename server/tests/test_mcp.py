@@ -77,6 +77,17 @@ def test_agent_works_through_mcp(server_url, world, conn):
             card = _data(await c.call_tool("get_entity", {"entity_id": me}))
             assert card["relationships"][0]["other_name"] == "リスナーX"
             assert card["relationships"][0]["label"] == "配信者"   # listener_of を配信者側から見た表示名
+            # 誰がどの出典で書いたかを AI からも確かめられる
+            first = next(f for f in card["facts"] if f["field_key"] == "first_person")
+            assert first["recorded_by"] == world.agent_a.name and first["source_id"] == doc["source_id"]
+            assert card["relationships"][0]["recorded_by"] == world.agent_a.name
+
+            # 一覧: 「自分」が先頭、種類と名前で絞れる
+            rows = _data(await c.call_tool("list_entities", {"workspace": world.a}))["entities"]
+            assert rows[0]["id"] == me and rows[0]["is_self"]
+            assert {r["display_name"] for r in rows} == {"AITuber A", "リスナーX"}
+            rows = _data(await c.call_tool("list_entities", {"workspace": world.a, "query": "@x_mcp"}))["entities"]
+            assert [r["id"] for r in rows] == [x]
 
         # 別の AITuber のトークンでは A の記録は見えない
         async with _client(server_url, world.tokens["agent-b"]) as c:

@@ -71,7 +71,7 @@ AITuber グループで使うため、管理者本人・各 AITuber・グルー�
 
 - 原文には `sources.trusted` があり、配信チャットや SNS は `false` のまま取り込む
 - フィールド・関係の種類に `requires_trusted_source` があり、`true` のものは**人が書くか、信頼できる出典に基づく場合しか書けない**（トリガーで強制）
-- 初期値では人格フィールド（`persona_type` / `first_person` / `speech_style` / `catchphrases` / `backstory` / `persona_values` / `ng_topics`）と `operator_of`（運営・管理者）関係が保護対象
+- 初期値では人格フィールド（`persona_type` / `first_person` / `speech_style` / `catchphrases` / `backstory` / `persona_values` / `ng_topics`）と `operator_of`（運営・管理者。人 → 人・組織・グループ）関係が保護対象
 - 管理者かどうかはコメントの文面ではなく、`actors`（認証されたトークン）で判断する
 
 エージェント（claude.ai のコネクタを含む）が人格フィールドや管理者関係を書くときの手順:

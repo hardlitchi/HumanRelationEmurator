@@ -234,3 +234,13 @@ def test_clusters_by_tie_strength(conn, world):
     # 他のワークスペースのエージェントからは見えない
     with pytest.raises(HreError, match="閲覧権限"):
         service.list_clusters(conn, world.agent_b, world.a)
+
+
+def test_operator_of_can_target_an_organization(conn, world):
+    boss = service.create_entity(conn, world.owner_human, "person", "運営さん", world.a)["id"]
+    org = service.create_entity(conn, world.owner_human, "organization", "AITuber グループ", world.a)["id"]
+    rel = service.add_relationship(conn, world.owner_human, "運営", boss, org)
+    assert rel["relation_type"] == "operator_of"
+    # 組織が運営する側にはなれない（人 → 人・組織・グループ）
+    with pytest.raises(HreError):
+        service.add_relationship(conn, world.owner_human, "operator_of", org, boss)

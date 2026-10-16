@@ -99,7 +99,7 @@ WITH seed (key, label, directed, inverse_label, source_kinds, target_kinds, alia
     ('works_at',         '所属',       true,  '所属メンバー', '{person}', '{organization}', '{勤務先,所属,employer,works_for}'),
     ('member_of',        'メンバー',   true,  'メンバー一覧', '{person}', '{group}', '{参加,所属グループ,belongs_to}'),
     ('part_of',          '下部組織',   true,  '上部組織', '{organization,group}', '{organization,group}', '{子会社,部署,subsidiary}'),
-    ('operator_of',      '運営・管理者', true, '担当タレント', '{person}', '{person}', '{管理者,運営,マネージャー,operator}'),
+    ('operator_of',      '運営・管理者', true, '担当タレント', '{person}', '{person,organization,group}', '{管理者,運営,マネージャー,operator}'),
     ('collaborated_with','コラボ相手', false, NULL, '{person}', '{person}', '{コラボ,collab,共演}'),
     ('listener_of',      'リスナー',   true,  '配信者', '{person}', '{person}', '{リスナー,ファン,視聴者,fan,viewer}')
 ),

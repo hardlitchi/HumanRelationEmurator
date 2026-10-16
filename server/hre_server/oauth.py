@@ -36,6 +36,7 @@ from . import service
 from .db import pool
 
 DDL = Path(__file__).resolve().parents[2] / "db" / "oauth.sql"
+UPGRADE = DDL.with_name("upgrade.sql")   # 既存 DB を seed.sql の変更に追いつかせる（冪等）
 CONSENT_PATH = "/connect"   # Web UI 側の許可画面
 
 REQUEST_SECONDS = 30 * 60   # 許可画面の前にログイン（トークン探し）を挟んでも間に合うように
@@ -46,6 +47,7 @@ REFRESH_SECONDS = 90 * 24 * 60 * 60
 
 def apply_schema(conn: Connection) -> None:
     conn.execute(DDL.read_text())
+    conn.execute(UPGRADE.read_text())
 
 
 def _row(conn: Connection, sql: str, params: Any) -> dict | None:
