@@ -541,14 +541,6 @@ def _public_url(request: Request) -> str:
     return (os.environ.get("HRE_PUBLIC_URL") or str(request.base_url)).rstrip("/")
 
 
-def _form_action_origin(redirect_uri: str) -> str:
-    """許可後に戻す先。form-action 'self' のままだと、POST の後のクライアントへのリダイレクトをブラウザが止める。"""
-    u = urlsplit(redirect_uri)
-    if u.scheme in ("http", "https"):
-        return f"{u.scheme}://{u.netloc}"
-    return f"{u.scheme}:"   # cursor:// などネイティブアプリのカスタムスキーム
-
-
 def _connect_page(request: Request, conn: Connection, me: service.Actor, request_id: str,
                   error: str | None = None) -> Response:
     pending = oauth.load_request(conn, request_id)
@@ -563,9 +555,12 @@ def _connect_page(request: Request, conn: Connection, me: service.Actor, request
            "default_actor": actors[0]["id"], "scopes": oauth.SCOPES, "error": error, "flash": None,
            "csrf": request.app.state.sessions.csrf(request.cookies[COOKIE])}
     resp = templates.TemplateResponse(request, "connect.html", ctx, status_code=400 if error else 200)
+    # form-action は付けない。「許可する」の POST はクライアントの戻り先へリダイレクトし、戻り先はさらに
+    # 別の場所（Claude アプリの claude:// など）へリダイレクトする。form-action はその連鎖のすべてに効くので、
+    # 戻り先の origin を足しても途中で止まり、もう一度押すと「使用済み」になっていた
     resp.headers["Content-Security-Policy"] = (
         "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; "
-        f"form-action 'self' {_form_action_origin(redirect_uri)}; base-uri 'none'")
+        "base-uri 'none'")
     return resp
 
 
