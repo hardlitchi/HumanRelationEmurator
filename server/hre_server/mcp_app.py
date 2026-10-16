@@ -119,9 +119,21 @@ def build_server(auth_url: str | None = None) -> MCPServer:
         return {"results": _call(service.find_entities, query=query, workspace=workspace, limit=limit)}
 
     @mcp.tool()
+    def list_entities(workspace: str,
+                      kind: Literal["person", "organization", "group"] | None = None,
+                      query: Annotated[str | None, Field(description="名前・識別子の部分一致で絞る")] = None,
+                      limit: int = 100) -> dict:
+        """ワークスペースにいる人・組織・グループの一覧（「自分」が先頭、あとは名前順）。関係・情報の件数つき。"""
+        rows = _call(service.list_entities, workspace=workspace, query=query, kind=kind, limit=limit)
+        return {"entities": [{**r, "updated_at": str(r["updated_at"])} for r in rows]}
+
+    @mcp.tool()
     def get_entity(entity_id: Id) -> dict:
-        """人物カード: 識別子、現在有効な主張（確度順）、関係とその文脈・強さ（0〜1）、強い順の相手（ties）を返す。"""
-        return _call(service.get_entity, entity_id=entity_id)
+        """人物カード: 識別子、現在有効な主張（確度順）、関係とその文脈・強さ（0〜1）、強い順の相手（ties）を返す。
+
+        主張と関係には記録者（recorded_by）、主張には出典（source_id。get_source で原文を読める）とメモも付く。
+        """
+        return _call(service.get_entity, entity_id=entity_id, detail=True)
 
     @mcp.tool()
     def get_persona_context() -> dict:
@@ -285,7 +297,7 @@ def main() -> None:
 
     public_url = os.environ.get("HRE_PUBLIC_URL", f"http://{args.host}:{args.port}")
     with pool().connection() as conn:
-        oauth.apply_schema(conn)   # 既存の DB にも OAuth 用の表を足す（何度流しても同じ）
+        oauth.apply_schema(conn)   # 既存の DB にも OAuth 用の表と upgrade.sql の変更を足す（何度流しても同じ）
     allowed_hosts = [h for h in os.environ.get("HRE_ALLOWED_HOSTS", "").split(",") if h]
     security = TransportSecuritySettings(allowed_hosts=allowed_hosts) if allowed_hosts else None
     build_server(auth_url=public_url).run("streamable-http", host=args.host, port=args.port,

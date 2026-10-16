@@ -12,7 +12,8 @@ AIエージェント（各 AITuber、管理者用エージェントなど）が�
 |---|---|
 | `list_workspaces` | 読み書きできるワークスペースと、それぞれの「自分」ノード |
 | `find_entities` | 名前・呼び名・SNS ハンドル等で人を探す（記録前の重複確認） |
-| `get_entity` | 人物カード（識別子・主張・関係と関係の文脈・強さ、強い順の相手 `ties`） |
+| `list_entities` | ワークスペースにいる人・組織・グループの一覧（「自分」が先頭。種類・名前で絞り込み） |
+| `get_entity` | 人物カード（識別子・主張・関係と関係の文脈・強さ、強い順の相手 `ties`）。主張と関係には記録者 `recorded_by`、主張には出典 `source_id` とメモも付く |
 | `create_entity` / `add_identifier` / `merge_entities` | 人・組織・グループの作成、識別子の追加、同一人物の統合 |
 | `resolve_field` / `list_fields` / `propose_field` / `add_field_alias` | フィールドマスターの参照と拡張 |
 | `list_relation_types` | 関係の種類の一覧 |

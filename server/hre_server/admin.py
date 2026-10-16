@@ -57,7 +57,7 @@ def main() -> None:
     with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
         match args.cmd:
             case "init-db":
-                for f in ("schema.sql", "seed.sql", "oauth.sql"):
+                for f in ("schema.sql", "seed.sql", "oauth.sql", "upgrade.sql"):
                     conn.execute((DB_DIR / f).read_text())
                 print("schema and seed applied")
             case "bootstrap":
