@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}AI 連携の許可{% endblock %}
+{% block body %}
+<section class="card narrow">
+  <h1>「{{ client_name }}」に接続を許可しますか？</h1>
+  <p>AI アプリ（戻り先: <code>{{ host }}</code>）が、この人間関係データに接続しようとしています。</p>
+  <form method="post" action="/connect" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="request" value="{{ request_id }}">
+    <label>接続する身元
+      <select name="actor">
+        {% for a in actors %}
+        <option value="{{ a.id }}" {{ 'selected' if a.id == default_actor else '' }}>{{ a.name }}{{ '（エージェント）' if a.kind == 'agent' else '（自分・人として書き込む）' }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <p class="muted small">選んだ身元の権限（ワークスペースごとの閲覧・編集）で読み書きし、記録者もその身元になります。
+      AITuber ごとのエージェントを選べば、その AITuber の視点で動きます。
+      {% if actors|length > 1 %}自分を選ぶと人格フィールドや管理者関係も直接書けるので、ふだんはエージェントを選んでください。{% endif %}</p>
+    <ul class="small">
+      <li>{{ scopes.read }}</li>
+    </ul>
+    <label><input type="checkbox" name="write" checked> {{ scopes.write }}も許可する</label>
+    <p class="muted small">許可は「AI 連携」画面からいつでも取り消せます。心当たりがなければ「拒否」してください。</p>
+    <div class="inline">
+      <button name="decision" value="allow">許可する</button>
+      <button name="decision" value="deny" class="secondary">拒否</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

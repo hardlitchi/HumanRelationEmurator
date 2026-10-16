@@ -18,7 +18,7 @@
 		reverse_proxy mcp:8000
 	}
 	# OAuth（claude.ai のカスタムコネクタなど）。認可サーバーも MCP サーバーが兼ねる
-	@oauth path /.well-known/oauth-* /authorize /token /register /revoke /oauth/*
+	@oauth path /.well-known/oauth-* /authorize /token /register /revoke
 	handle @oauth {
 		reverse_proxy mcp:8000
 	}

@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import re
 import secrets
 from urllib.parse import parse_qs, urlsplit
 
@@ -13,7 +14,9 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 
-from hre_server import service
+from starlette.testclient import TestClient
+
+from hre_server import service, web
 
 CALLBACK = "https://claude.ai/api/mcp/auth_callback"
 
@@ -21,6 +24,18 @@ CALLBACK = "https://claude.ai/api/mcp/auth_callback"
 @pytest.fixture
 def base(server_url):
     return server_url.removesuffix("/mcp")
+
+
+@pytest.fixture
+def browser(world):
+    """許可画面（Web UI の /connect）を開く人のブラウザ。管理者でログイン済み。"""
+    return _browser(world.tokens["admin"])
+
+
+def _browser(token: str) -> TestClient:
+    c = TestClient(web.create_app(secret="test-secret", secure_cookies=False))
+    assert c.post("/login", data={"token": token, "next": "/"}, follow_redirects=False).status_code == 303
+    return c
 
 
 def _register(base: str, auth_method: str = "none") -> dict:
@@ -42,18 +57,28 @@ def _authorize(base: str, client_id: str) -> tuple[str, str]:
     return r.headers["location"], verifier
 
 
-def _login(login_url: str, token: str) -> httpx2.Response:
-    request_id = parse_qs(urlsplit(login_url).query)["request"][0]
-    return httpx2.post(login_url.split("?")[0], data={"request": request_id, "token": token})
+def _consent(browser: TestClient, consent_url: str, actor_id: str, write: bool = True,
+             decision: str = "allow"):
+    """許可画面を開いて、身元を選んで許可（か拒否）する。"""
+    u = urlsplit(consent_url)
+    page = browser.get(f"{u.path}?{u.query}")
+    if page.status_code != 200:
+        return page
+    csrf = re.search(r'name="csrf" (?:value|content)="([^"]+)"', page.text).group(1)
+    data = {"csrf": csrf, "request": parse_qs(u.query)["request"][0], "actor": actor_id, "decision": decision}
+    if write:
+        data["write"] = "on"
+    return browser.post("/connect", data=data, follow_redirects=False)
 
 
 def _token(base: str, **data) -> httpx2.Response:
     return httpx2.post(f"{base}/token", data=data)
 
 
-def _connect(base: str, client_id: str, token: str, client_secret: str | None = None) -> dict:
+def _connect(base: str, browser: TestClient, client_id: str, actor_id: str, client_secret: str | None = None,
+             write: bool = True) -> dict:
     login_url, verifier = _authorize(base, client_id)
-    r = _login(login_url, token)
+    r = _consent(browser, login_url, actor_id, write)
     assert r.status_code == 303, r.text
     loc = urlsplit(r.headers["location"])
     assert f"{loc.scheme}://{loc.netloc}{loc.path}" == CALLBACK
@@ -93,19 +118,26 @@ def test_discovery_points_to_this_server(base, server_url):
     assert asm["code_challenge_methods_supported"] == ["S256"]
 
 
-def test_oauth_connection_acts_as_token_owner(base, server_url, world):
+def test_oauth_connection_acts_as_chosen_agent(base, server_url, world, browser):
     client_id = _register(base)["client_id"]
 
-    # ログイン画面にはクライアント名と戻り先が出て、埋め込みは禁止
-    login_url, _ = _authorize(base, client_id)
-    page = httpx2.get(login_url)
-    assert page.status_code == 200 and "Claude" in page.text and "claude.ai" in page.text
-    assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
-    # 間違ったトークンでは認可されない
-    r = _login(login_url, "hre_wrong")
-    assert r.status_code == 200 and "トークンが正しくない" in r.text
+    # /authorize は Web UI の許可画面に送る。ログインしていなければログイン画面へ（戻り先付き）
+    consent_url, _ = _authorize(base, client_id)
+    assert urlsplit(consent_url).path == "/connect"
+    u = urlsplit(consent_url)
+    anon = TestClient(web.create_app(secret="test-secret", secure_cookies=False))
+    r = anon.get(f"{u.path}?{u.query}", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/login?next=%2Fconnect%3Frequest%3D")
 
-    t = _connect(base, client_id, world.tokens["agent-a"])
+    # 許可画面にはクライアント名と戻り先が出て、埋め込みは禁止。戻り先へのフォーム送信は許す
+    page = browser.get(f"{u.path}?{u.query}")
+    assert page.status_code == 200 and "Claude" in page.text and "claude.ai" in page.text
+    csp = page.headers["content-security-policy"]
+    assert "frame-ancestors 'none'" in csp and "form-action 'self' https://claude.ai" in csp
+    # 管理者はエージェントを身元に選べる
+    assert world.agent_a.name in page.text and world.agent_b.name in page.text
+
+    t = _connect(base, browser, client_id, world.agent_a.id)
     assert t["access_token"].startswith("hrea_") and t["refresh_token"].startswith("hrer_")
     assert anyio.run(_workspaces, server_url, t["access_token"]) == {world.a, world.group}
 
@@ -122,17 +154,59 @@ def test_oauth_connection_acts_as_token_owner(base, server_url, world):
     r = _token(base, grant_type="refresh_token", refresh_token=t["refresh_token"], client_id=client_id)
     assert r.status_code == 400
 
-    # 別のエージェントのトークンで認可すれば、そのエージェントとして動く
-    tb = _connect(base, client_id, world.tokens["agent-b"])
+    # 別のエージェントを選べば、そのエージェントとして動く
+    tb = _connect(base, browser, client_id, world.agent_b.id)
     assert anyio.run(_workspaces, server_url, tb["access_token"]) == {world.b, world.group}
 
     # hre_ トークンを直接 Bearer で送る従来の接続も使える
     assert anyio.run(_workspaces, server_url, world.tokens["agent-a"]) == {world.a, world.group}
 
 
-def test_rotating_the_hre_token_cuts_oauth_access(base, server_url, world, conn):
+def test_non_admin_can_only_connect_as_self(base, server_url, world):
+    owner = _browser(world.tokens["owner"])
     client_id = _register(base)["client_id"]
-    t = _connect(base, client_id, world.tokens["agent-a"])
+    consent_url, _ = _authorize(base, client_id)
+    u = urlsplit(consent_url)
+    page = owner.get(f"{u.path}?{u.query}")
+    assert world.agent_a.name not in page.text
+    r = _consent(owner, consent_url, world.agent_a.id)
+    assert r.status_code == 400 and "その身元では" in r.text
+    # 同じリクエストのまま自分を選べば通る
+    r = _consent(owner, consent_url, world.owner_human.id)
+    assert r.status_code == 303 and r.headers["location"].startswith(CALLBACK)
+
+
+def test_read_only_connection_cannot_write(base, server_url, world, browser):
+    client_id = _register(base)["client_id"]
+    t = _connect(base, browser, client_id, world.agent_a.id, write=False)
+    assert anyio.run(_workspaces, server_url, t["access_token"]) == {world.a, world.group}
+
+    async def create() -> bool:
+        http = create_mcp_http_client(headers={"Authorization": f"Bearer {t['access_token']}"})
+        async with Client(streamable_http_client(server_url, http_client=http)) as c:
+            result = await c.call_tool("create_entity", {"kind": "person", "display_name": "読み取り専用",
+                                                         "workspace": world.a})
+            return result.is_error and "閲覧だけ" in result.content[0].text
+    assert anyio.run(create)
+
+    # リフレッシュで write に広げることはできない
+    r = _token(base, grant_type="refresh_token", refresh_token=t["refresh_token"], client_id=client_id,
+               scope="read write")
+    assert r.status_code == 400
+
+
+def test_deny_returns_access_denied(base, world, browser):
+    client_id = _register(base)["client_id"]
+    consent_url, _ = _authorize(base, client_id)
+    r = _consent(browser, consent_url, world.agent_a.id, decision="deny")
+    assert r.status_code == 303
+    q = parse_qs(urlsplit(r.headers["location"]).query)
+    assert q["error"] == ["access_denied"] and q["state"] == ["st"]
+
+
+def test_rotating_the_agent_token_cuts_oauth_access(base, server_url, world, conn, browser):
+    client_id = _register(base)["client_id"]
+    t = _connect(base, browser, client_id, world.agent_a.id)
     assert _accepted(server_url, t["access_token"])
 
     service.rotate_token(conn, world.agent_a.name)
@@ -141,20 +215,39 @@ def test_rotating_the_hre_token_cuts_oauth_access(base, server_url, world, conn)
     assert r.status_code == 400
 
 
-def test_revoke_drops_the_whole_grant(base, server_url, world):
+def test_connections_page_lists_and_revokes(base, server_url, world, browser):
+    client_id = _register(base)["client_id"]
+    t = _connect(base, browser, client_id, world.agent_b.id, write=False)
+    page = browser.get("/connectors")
+    assert page.status_code == 200 and "/mcp" in page.text and "閲覧のみ" in page.text
+    family = re.findall(r'name="family" value="([^"]+)"', page.text)
+    assert family
+    csrf = re.search(r'name="csrf" (?:value|content)="([^"]+)"', page.text).group(1)
+
+    # 関係のない人には見えず、取り消せない
+    owner = _browser(world.tokens["owner"])
+    assert world.agent_b.name not in owner.get("/connectors").text
+
+    for f in family:
+        r = browser.post("/connectors/revoke", data={"csrf": csrf, "family": f}, follow_redirects=False)
+        assert r.status_code == 303
+    assert not _accepted(server_url, t["access_token"])
+
+
+def test_revoke_drops_the_whole_grant(base, server_url, world, browser):
     # SDK の /revoke は client_secret を必須にしているので、秘密鍵ありのクライアントで確かめる
     client = _register(base, "client_secret_post")
     client_id = client["client_id"]
-    t = _connect(base, client_id, world.tokens["agent-b"], client["client_secret"])
+    t = _connect(base, browser, client_id, world.agent_b.id, client["client_secret"])
     r = httpx2.post(f"{base}/revoke", data={"token": t["refresh_token"], "client_id": client_id,
                                             "client_secret": client["client_secret"]})
     assert r.status_code == 200, r.text
     assert not _accepted(server_url, t["access_token"])
 
 
-def test_unknown_or_used_request_is_rejected(base, world):
+def test_unknown_or_used_request_is_rejected(base, world, browser):
     client_id = _register(base)["client_id"]
-    login_url, _ = _authorize(base, client_id)
-    assert _login(login_url, world.tokens["agent-a"]).status_code == 303
-    assert _login(login_url, world.tokens["agent-a"]).status_code == 400   # 同じリクエストは2度使えない
-    assert httpx2.get(f"{base}/oauth/login?request=nope").status_code == 400
+    consent_url, _ = _authorize(base, client_id)
+    assert _consent(browser, consent_url, world.agent_a.id).status_code == 303
+    assert _consent(browser, consent_url, world.agent_a.id).status_code == 400   # 同じリクエストは2度使えない
+    assert browser.get("/connect?request=nope").status_code == 400
