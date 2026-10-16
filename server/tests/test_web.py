@@ -248,3 +248,21 @@ def test_url_identifiers_link_out(app, conn, world):
     assert "スタックチャンで開く" in card
     assert '<a href="https://example.com/me"' in card
     assert 'href="javascript:' not in card and "javascript:alert(1)" in card
+
+
+def test_admin_sets_self(app, conn, world):
+    old = service.create_entity(conn, world.agent_a, "person", "前の自分", world.a, is_self=True)["id"]
+    x = service.create_entity(conn, world.agent_a, "person", "本当の自分", world.a)["id"]
+    with pytest.raises(service.HreError, match="管理者"):
+        service.set_self(conn, world.agent_a, x)
+    shared = service.create_entity(conn, world.admin, "person", "共有の人", world.group)["id"]
+    with pytest.raises(service.HreError, match="共有"):
+        service.set_self(conn, world.admin, shared)
+
+    c = _login(app, world.tokens["admin"])
+    csrf = _csrf(c, f"/e/{x}")
+    assert "「自分」にする" in c.get(f"/e/{x}").text
+    c.post(f"/e/{x}/self", data={"csrf": csrf})
+    assert service.get_entity(conn, world.admin, x)["is_self"]
+    assert not service.get_entity(conn, world.admin, old)["is_self"]
+    assert "「自分」にする" not in c.get(f"/e/{x}").text

@@ -437,6 +437,13 @@ def merge(request, conn, me, form):
 
 
 @action
+def set_self(request, conn, me, form):
+    eid = request.path_params["id"]
+    service.set_self(conn, me, eid)
+    return _back(request, fallback=f"/e/{eid}", ok="「自分」にしました")
+
+
+@action
 def erase(request, conn, me, form):
     eid = request.path_params["id"]
     e = service.get_entity(conn, me, eid)
@@ -645,6 +652,7 @@ def create_app(secret: str | None = None, secure_cookies: bool = True,
         Route("/e/{id}/relationships", add_relationship, methods=["POST"]),
         Route("/e/{id}/merge", merge, methods=["POST"]),
         Route("/e/{id}/erase", erase, methods=["POST"]),
+        Route("/e/{id}/self", set_self, methods=["POST"]),
         Route("/facts/{id}/retract", retract, methods=["POST"]),
         Route("/r/{id}/end", end_relationship, methods=["POST"]),
         Route("/s/{id}", source),

@@ -5,6 +5,9 @@
 <p class="crumbs"><a href="/">ワークスペース</a> /</p>
 <h1>{{ ws.key }} <span class="tag">{{ WS_KINDS[ws.kind] }}</span></h1>
 <p class="links small"><a href="/w/{{ ws.key }}/clusters">グループ（推定）</a> · <a href="/w/{{ ws.key }}/sources">出典（原文）</a> · <a href="/activity?workspace={{ ws.key }}">このワークスペースの更新履歴</a></p>
+{% if not has_self and ws.kind != 'shared' and me.is_admin %}
+<p class="muted small">このワークスペースには「自分」がまだいません。視点の主の人物ページを開き「この人を「自分」にする」を押すと、自分との強さ順で並べられます。</p>
+{% endif %}
 
 <form method="get" class="search">
   <input type="search" name="q" value="{{ q }}" placeholder="名前・SNSハンドルで探す">

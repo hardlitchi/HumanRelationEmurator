@@ -929,6 +929,34 @@ def rename_entity(conn: Connection, actor: Actor, entity_id: str, display_name: 
     return {"id": entity_id, "display_name": display_name}
 
 
+def set_self(conn: Connection, actor: Actor, entity_id: str) -> dict:
+    """この人をワークスペースの「自分」にする（前の「自分」は外す）。管理者だけ。
+
+    bootstrap は owner に「自分」を作らないので、管理者本人のノードを後から指定するのに使う。
+    共有ワークスペースは「自分」を持たない。
+    """
+    if not actor.is_admin:
+        raise HreError("「自分」を指定できるのは管理者だけです")
+    e = _one(conn, """SELECT e.kind, e.is_self, e.merged_into_id, w.id::text AS ws_id, w.kind AS ws_kind
+                        FROM hre.entities e JOIN hre.workspaces w ON w.id = e.workspace_id WHERE e.id = %s""",
+             (entity_id,))
+    if e is None:
+        raise HreError(f"entities {entity_id} が見つかりません")
+    if e["kind"] != "person" or e["merged_into_id"] is not None:
+        raise HreError("「自分」にできるのは統合済みでない人だけです")
+    if e["ws_kind"] == "shared":
+        raise HreError("共有ワークスペースには「自分」を置きません")
+    if e["is_self"]:
+        return {"id": entity_id, "is_self": True}
+    with conn.transaction():
+        prev = _one(conn, "UPDATE hre.entities SET is_self = false, updated_at = now() "
+                          "WHERE workspace_id = %s AND is_self RETURNING id::text", (e["ws_id"],))
+        conn.execute("UPDATE hre.entities SET is_self = true, updated_at = now() WHERE id = %s", (entity_id,))
+        _audit(conn, actor, e["ws_id"], "update", "entities", entity_id,
+               [entity_id] + ([prev["id"]] if prev else []), {"is_self": True, "previous": prev and prev["id"]})
+    return {"id": entity_id, "is_self": True, "previous": prev and prev["id"]}
+
+
 def remove_identifier(conn: Connection, actor: Actor, entity_id: str, scheme: str, value: str) -> dict:
     ws_id = _ws_of(conn, "entities", entity_id)
     _check_write(actor, ws_id)
