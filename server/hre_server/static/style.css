@@ -104,3 +104,44 @@ button.link.danger { color: var(--err); }
 .meter { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .meter meter { width: 72px; height: 8px; }
 .meter .num { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 2ch; }
+/* 確認（受信箱）: 1件ずつ、親指で押せる大きさで */
+.badge { display: inline-block; min-width: 1.5em; padding: 0 6px; border-radius: 999px; background: var(--err); color: #fff;
+  font-size: .78rem; font-weight: 700; line-height: 1.5; text-align: center; vertical-align: middle; }
+.nav-inbox { font-weight: 600; }
+a.inbox-cta { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: inherit;
+  border-color: var(--warn); }
+a.inbox-cta:hover { text-decoration: none; border-color: var(--accent); }
+.cta-go { font-weight: 700; color: var(--accent); white-space: nowrap; }
+.inbox { max-width: 560px; margin: 0 auto; padding-bottom: 120px; }
+.progress { display: flex; align-items: center; gap: 10px; margin: 4px 0 8px; }
+.progress progress { flex: 1; height: 10px; accent-color: var(--ok); }
+.review { padding: 18px 16px; }
+.review h1 { font-size: 1.3rem; margin: .4rem 0; }
+.review .kicker { margin: 0; }
+.review .answer { font-size: 1.6rem; font-weight: 700; margin: .2rem 0; overflow-wrap: anywhere; }
+.review .ask { font-size: 1.1rem; margin: 0 0 .6rem; }
+.review .hint { color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; margin-bottom: 0; }
+.review pre.source.short, .evidence pre.source { max-height: 30vh; }
+.evidence summary { font-weight: 400; color: var(--accent); }
+.similar { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.similar p { margin: 0; }
+button.wide { width: 100%; }
+.decide { position: fixed; left: 0; right: 0; bottom: 0; z-index: 2; display: grid; grid-template-columns: 1.6fr 1fr 1fr;
+  gap: 8px; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--card);
+  border-top: 1px solid var(--line); max-width: 560px; margin: 0 auto; }
+.decide button, .decide .button { min-height: 56px; font-size: 1.05rem; border-radius: 12px; padding: 8px 4px;
+  white-space: nowrap; }
+.decide .yes { background: var(--ok); color: #fff; }
+.decide .no { background: var(--tag); color: var(--err); }
+a.button { display: inline-flex; align-items: center; justify-content: center; background: var(--accent);
+  color: var(--accent-fg); border-radius: 8px; padding: 8px 14px; min-height: 40px; font-weight: 600; }
+a.button:hover { text-decoration: none; }
+a.button.secondary, .decide .later { background: var(--tag); color: var(--fg); }
+.done { text-align: center; padding: 28px 16px; }
+.done .big { font-size: 1.5rem; font-weight: 700; margin: 0 0 .4rem; }
+.inbox-flash { display: flex; justify-content: space-between; align-items: center; gap: 8px; max-width: 560px;
+  margin: 0 auto 8px; }
+.inbox-flash button.link { font-weight: 600; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .decide .yes { color: #111; }
+}

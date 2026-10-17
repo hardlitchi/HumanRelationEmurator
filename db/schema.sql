@@ -179,6 +179,7 @@ CREATE TABLE sources (
     occurred_at  timestamptz,        -- 原文が書かれた/起きた時刻
     captured_by  uuid REFERENCES actors(id) ON DELETE SET NULL,
     captured_at  timestamptz NOT NULL DEFAULT now(),
+    reviewed_at  timestamptz,        -- 人が信頼するかどうかを決めた時刻（NULL の document は Web UI の「確認」に出る）
     UNIQUE (workspace_id, id)
 );
 
@@ -327,6 +328,23 @@ CREATE TABLE audit_log (
     at          timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX audit_log_entity_ids ON audit_log USING gin (entity_ids);
+
+-- 人の確認待ち: エージェントが保護フィールド・管理者関係を書こうとして拒否された書き込み。
+-- 人が Web UI の「確認」で承認すると、その人の書き込みとして入る（却下なら入らない）
+CREATE TABLE IF NOT EXISTS hre.review_requests (
+    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id  uuid NOT NULL REFERENCES hre.workspaces(id) ON DELETE CASCADE,
+    kind          text NOT NULL CHECK (kind IN ('fact', 'relationship')),
+    payload       jsonb NOT NULL,                  -- record_fact / add_relationship の引数
+    entity_ids    uuid[] NOT NULL DEFAULT '{}',    -- 関係する人（完全削除のときにまとめて消す）
+    requested_by  uuid REFERENCES hre.actors(id) ON DELETE SET NULL,
+    requested_at  timestamptz NOT NULL DEFAULT now(),
+    status        text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    decided_by    uuid REFERENCES hre.actors(id) ON DELETE SET NULL,
+    decided_at    timestamptz,
+    result_id     uuid                             -- 承認で作った fact / relationship
+);
+CREATE INDEX IF NOT EXISTS review_requests_pending ON hre.review_requests (workspace_id) WHERE status = 'pending';
 
 -- ===========================================================================
 -- 関数

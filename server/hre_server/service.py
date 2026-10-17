@@ -135,6 +135,11 @@ def _audit(conn: Connection, actor: Actor, ws_id: str | None, action: str, targe
                  (actor.id, ws_id, action, target, target_id, entity_ids, Jsonb(detail) if detail else None))
 
 
+def _is_trust_error(e: Exception) -> bool:
+    msg = getattr(getattr(e, "diag", None), "message_primary", None) or str(e)
+    return "can only be written by a human or from a trusted source" in msg
+
+
 def _db_error(e: Exception) -> HreError:
     # トリガーの RAISE EXCEPTION や制約違反は、エージェントが直せるようにそのまま返す
     msg = getattr(getattr(e, "diag", None), "message_primary", None) or str(e)
@@ -148,6 +153,11 @@ TRUSTED_SOURCE_HINT = (
     "\n人格フィールドと管理者関係は、人が書くか、人が「信頼済み」にした出典に基づく場合しか書けません。"
     "設定資料・原作などの原文を add_source で保存し、返ってきた review_url を人に渡して"
     "「信頼済みにする」を押してもらってから、その source_id を付けて書き直してください。"
+)
+REVIEW_QUEUED_HINT = (
+    "\nこの書き込みは人の確認待ち（review_id: {id}）に入れました。人が Web UI の「確認」で承認すると、"
+    "その人の書き込みとして記録されるので、同じ内容を送り直す必要はありません。"
+    "人には「Web UI の確認画面で承認してください」と伝えてください。"
 )
 
 
@@ -422,6 +432,10 @@ def erase_entity(conn: Connection, actor: Actor, entity_id: str, include_linked:
     _ws_of(conn, "entities", entity_id)
     with conn.transaction():
         conn.execute("SELECT hre.erase_entity(%s, %s)", (entity_id, include_linked))
+        # 消えた人に関する確認待ち（値を含む）も残さない
+        conn.execute("""DELETE FROM hre.review_requests r
+                         WHERE EXISTS (SELECT 1 FROM unnest(r.entity_ids) x
+                                        WHERE NOT EXISTS (SELECT 1 FROM hre.entities e WHERE e.id = x))""")
     return {"erased": entity_id, "include_linked": include_linked}
 
 
@@ -487,7 +501,16 @@ def record_fact(conn: Connection, actor: Actor, field: str, value: Any, epistemi
             _audit(conn, actor, ws_id, "create", "facts", row["id"], subjects + ([value_entity] if value_entity else []),
                    {"field": f["key"]})
     except errors.Error as e:
-        raise _db_error(e) from e
+        err = _db_error(e)
+        if _is_trust_error(e) and actor.kind != "human":
+            payload = {"field": f["key"], "value": value, "epistemic": epistemic, "entity_id": entity_id,
+                       "relationship_id": relationship_id, "confidence": confidence, "source_id": source_id,
+                       "valid_from": valid_from, "valid_to": valid_to, "note": note}
+            subjects = [entity_id] if entity_id else [r["id"] for r in _q(
+                conn, """SELECT unnest(ARRAY[source_entity_id, target_entity_id])::text AS id
+                           FROM hre.relationships WHERE id = %s""", (relationship_id,))]
+            err = _queue_review(conn, actor, ws_id, "fact", payload, subjects + ([value_entity] if value_entity else []))
+        raise err from e
     return {"fact_id": row["id"], "field": f["key"]}
 
 
@@ -524,7 +547,12 @@ def add_relationship(conn: Connection, actor: Actor, relation_type: str, source_
             _audit(conn, actor, ws_id, "create", "relationships", row["id"], [source_entity_id, target_entity_id],
                    {"type": rt["key"]})
     except errors.Error as e:
-        raise _db_error(e) from e
+        err = _db_error(e)
+        if _is_trust_error(e) and actor.kind != "human":
+            payload = {"relation_type": rt["key"], "source_entity_id": source_entity_id,
+                       "target_entity_id": target_entity_id, "valid_from": valid_from, "source_id": source_id}
+            err = _queue_review(conn, actor, ws_id, "relationship", payload, [source_entity_id, target_entity_id])
+        raise err from e
     return {"relationship_id": row["id"], "relation_type": rt["key"]}
 
 
@@ -1032,9 +1060,265 @@ def set_source_trusted(conn: Connection, actor: Actor, source_id: str, trusted: 
     ws_id = _ws_of(conn, "sources", source_id)
     _check_write(actor, ws_id)
     with conn.transaction():
-        conn.execute("UPDATE hre.sources SET trusted = %s WHERE id = %s", (trusted, source_id))
+        conn.execute("UPDATE hre.sources SET trusted = %s, reviewed_at = now() WHERE id = %s", (trusted, source_id))
         _audit(conn, actor, ws_id, "update", "sources", source_id, [], {"trusted": trusted})
     return {"source_id": source_id, "trusted": trusted}
+
+
+# ---------------------------------------------------------------------------
+# 人の確認（受信箱）
+# 人が決めないと進まないものを1か所に集める:
+#   write  … エージェントが保護フィールド・管理者関係を書こうとして拒否された書き込み（承認すると人の書き込みで入る）
+#   source … まだ誰も信頼するか決めていない設定資料（kind = document の未確認の出典）
+#   field  … エージェントが提案した項目（管理者だけ）
+# ---------------------------------------------------------------------------
+
+REVIEW_SOURCE_KINDS = ("document",)   # 人格や管理者の根拠になりうる出典。配信コメントなどは確認に出さない
+
+
+def _queue_review(conn: Connection, actor: Actor, ws_id: str, kind: str, payload: dict,
+                  entity_ids: list[str]) -> HreError:
+    """拒否された書き込みを確認待ちに入れ、エージェントに返すエラーを作る。同じ内容が待っていれば増やさない。"""
+    with conn.transaction():
+        row = _one(conn, """SELECT id::text FROM hre.review_requests
+                             WHERE workspace_id = %s AND kind = %s AND payload = %s AND status = 'pending'""",
+                   (ws_id, kind, Jsonb(payload)))
+        if row is None:
+            row = _one(conn, """INSERT INTO hre.review_requests (workspace_id, kind, payload, entity_ids, requested_by)
+                                VALUES (%s, %s, %s, %s::uuid[], %s) RETURNING id::text""",
+                       (ws_id, kind, Jsonb(payload), sorted(set(entity_ids)), actor.id))
+            _audit(conn, actor, ws_id, "create", "review_requests", row["id"], entity_ids, {"kind": kind})
+    base = ("field" if kind == "fact" else "relation type") + f' "{payload.get("field") or payload.get("relation_type")}"'
+    return HreError(f"{base} can only be written by a human or from a trusted source"
+                    + REVIEW_QUEUED_HINT.format(id=row["id"])
+                    + "\n同じ設定資料からまとめて書くなら、原文を add_source で保存して review_url を人に渡し、"
+                      "「信頼済みにする」を押してもらうと、以後その source_id を付けて直接書けます。")
+
+
+def _writable_ids(conn: Connection, actor: Actor) -> list[str]:
+    if actor.is_admin:
+        return [r["id"] for r in _q(conn, "SELECT id::text FROM hre.workspaces")]
+    return [ws for ws, s in actor.grants.items() if "write" in s]
+
+
+def count_reviews(conn: Connection, actor: Actor) -> int:
+    """ヘッダーのバッジ用。人間（Web UI）だけが判断できるので、エージェントには常に 0。"""
+    if actor.kind != "human":
+        return 0
+    ws = _writable_ids(conn, actor)
+    row = _one(conn, """SELECT (SELECT count(*) FROM hre.review_requests
+                                 WHERE status = 'pending' AND workspace_id = ANY(%(ws)s::uuid[]))
+                             + (SELECT count(*) FROM hre.sources
+                                 WHERE NOT trusted AND reviewed_at IS NULL AND kind = ANY(%(kinds)s)
+                                   AND workspace_id = ANY(%(ws)s::uuid[]))
+                             + (SELECT count(*) FROM hre.field_definitions WHERE status = 'proposed' AND %(admin)s)
+                             AS n""",
+               {"ws": ws, "kinds": list(REVIEW_SOURCE_KINDS), "admin": actor.is_admin})
+    return int(row["n"])
+
+
+def _short(text: str | None, n: int = 400) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= n else text[:n].rstrip() + "…"
+
+
+def list_reviews(conn: Connection, actor: Actor) -> list[dict]:
+    """確認待ちを、判断に要る情報つきで古い順に（書き込み → 出典 → 項目）。"""
+    if actor.kind != "human":
+        raise HreError("確認は人だけが行えます")
+    ws = _writable_ids(conn, actor)
+    items: list[dict] = []
+
+    for r in _q(conn, """SELECT r.id::text, r.kind, r.payload, r.requested_at, r.workspace_id::text, w.key AS workspace,
+                                w.name AS workspace_name, a.name AS requested_by
+                           FROM hre.review_requests r JOIN hre.workspaces w ON w.id = r.workspace_id
+                           LEFT JOIN hre.actors a ON a.id = r.requested_by
+                          WHERE r.status = 'pending' AND r.workspace_id = ANY(%s::uuid[])
+                          ORDER BY r.requested_at""", (ws,)):
+        p = r["payload"]
+        item = {"key": f"w:{r['id']}", "type": "write", "id": r["id"], "workspace": r["workspace"],
+                "workspace_name": r["workspace_name"], "requested_by": r["requested_by"],
+                "requested_at": r["requested_at"], "kind": r["kind"], "payload": p}
+        f = _one(conn, f"SELECT {_FIELD_COLS} FROM hre.resolve_field(%s) WHERE key IS NOT NULL",
+                 (p["field"],)) if r["kind"] == "fact" else None
+        ref = p.get("value") if f and f["value_type"] == "entity_ref" else None
+        names = {x["id"]: x["display_name"] for x in _q(
+            conn, "SELECT id::text, display_name FROM hre.entities WHERE id = ANY(%s::uuid[])",
+            ([v for v in (p.get("entity_id"), p.get("source_entity_id"), p.get("target_entity_id"), ref) if v],))}
+        if r["kind"] == "fact":
+            item["field"] = f
+            subject = p.get("entity_id")
+            if p.get("relationship_id"):
+                rel = _one(conn, """SELECT r.source_entity_id::text AS a, r.target_entity_id::text AS b, t.label
+                                      FROM hre.relationships r JOIN hre.relation_types t ON t.id = r.relation_type_id
+                                     WHERE r.id = %s""", (p["relationship_id"],))
+                if rel:
+                    names.update({x["id"]: x["display_name"] for x in _q(
+                        conn, "SELECT id::text, display_name FROM hre.entities WHERE id = ANY(%s::uuid[])",
+                        ([rel["a"], rel["b"]],))})
+                    item["subject_name"] = f"{names.get(rel['a'], '?')} → {names.get(rel['b'], '?')}（{rel['label']}）"
+                    subject = rel["a"]
+            else:
+                item["subject_name"] = names.get(subject, "（削除された人）")
+            item["subject_id"] = subject
+            hide = f and not f["ai_shareable"] and not _can_read_sensitive(actor, r["workspace_id"])
+            v = p.get("value")
+            item["value_text"] = "（機微情報のため非表示）" if hide else (
+                names.get(v, v) if f and f["value_type"] == "entity_ref" else
+                v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))
+            # 今の値（同じ項目に既にある主張）。上書きになるのかを見て決められるように
+            item["current"] = [] if hide or not p.get("entity_id") else [
+                x["value"] if isinstance(x["value"], str) else json.dumps(x["value"], ensure_ascii=False)
+                for x in _q(conn, """SELECT value FROM hre.current_facts
+                                      WHERE entity_id = %s AND field_key = %s AND value IS NOT NULL
+                                      ORDER BY recorded_at DESC LIMIT 3""", (p["entity_id"], p["field"]))]
+        else:
+            rt = _one(conn, "SELECT key, label, inverse_label, directed FROM hre.relation_types WHERE key = %s",
+                      (p["relation_type"],))
+            item["relation"] = rt
+            item["source_name"] = names.get(p["source_entity_id"], "（削除された人）")
+            item["target_name"] = names.get(p["target_entity_id"], "（削除された人）")
+            item["subject_id"] = p["source_entity_id"]
+        if p.get("source_id"):
+            item["source"] = _one(conn, """SELECT id::text, kind, title, trusted, content FROM hre.sources
+                                            WHERE id = %s""", (p["source_id"],))
+            if item["source"]:
+                item["source"]["preview"] = _short(item["source"].pop("content"))
+        items.append(item)
+
+    for s in _q(conn, """SELECT s.id::text, s.kind, s.title, s.uri, s.content, s.captured_at, w.key AS workspace,
+                                w.name AS workspace_name, a.name AS captured_by
+                           FROM hre.sources s JOIN hre.workspaces w ON w.id = s.workspace_id
+                           LEFT JOIN hre.actors a ON a.id = s.captured_by
+                          WHERE NOT s.trusted AND s.reviewed_at IS NULL AND s.kind = ANY(%s)
+                            AND s.workspace_id = ANY(%s::uuid[])
+                          ORDER BY s.captured_at""", (list(REVIEW_SOURCE_KINDS), ws)):
+        s["preview"] = _short(s.pop("content"), 600)
+        items.append({"key": f"s:{s['id']}", "type": "source", "id": s["id"], "source": s,
+                      "workspace": s["workspace"], "workspace_name": s["workspace_name"]})
+
+    if actor.is_admin:
+        for f in _q(conn, f"""SELECT {_FIELD_COLS}, f.created_at, a.name AS created_by,
+                                     (SELECT count(*) FROM hre.facts x WHERE x.field_id = f.id AND x.retracted_at IS NULL)
+                                         AS usage_count
+                                FROM hre.field_definitions f LEFT JOIN hre.actors a ON a.id = f.created_by
+                               WHERE f.status = 'proposed' ORDER BY f.created_at"""):
+            # 表記ゆれの候補（キーと表示名の両方で引く）。同じ意味ならその場で統合できるように
+            similar = _q(conn, """SELECT s.key, max(s.label) AS label, max(s.score) AS score
+                                     FROM (SELECT * FROM hre.suggest_fields(%(key)s, 8)
+                                           UNION ALL SELECT * FROM hre.suggest_fields(%(label)s, 8)) s
+                                     JOIN hre.field_definitions d ON d.key = s.key
+                                    WHERE s.key <> %(key)s AND d.status = 'approved'
+                                    GROUP BY s.key ORDER BY max(s.score) DESC LIMIT 3""",
+                         {"key": f["key"], "label": f["label"]})
+            items.append({"key": f"f:{f['key']}", "type": "field", "id": f["key"], "field": f, "similar": similar})
+    return items
+
+
+def decide_review(conn: Connection, actor: Actor, key: str, decision: str, merged_into: str | None = None) -> dict:
+    """受信箱の1件を決める。decision: approve / reject（項目は merge も）。元に戻すための情報を返す。"""
+    if actor.kind != "human":
+        raise HreError("確認は人だけが行えます")
+    if decision not in ("approve", "reject", "merge"):
+        raise HreError(f"decision {decision!r} は使えません")
+    typ, _, rid = key.partition(":")
+    match typ:
+        case "w":
+            return _decide_write(conn, actor, rid, decision)
+        case "s":
+            if decision == "merge":
+                raise HreError("出典は統合できません")
+            _check_write(actor, _ws_of(conn, "sources", rid))
+            set_source_trusted(conn, actor, rid, decision == "approve")
+            return {"key": key, "decision": decision}
+        case "f":
+            if decision == "merge" and not merged_into:
+                raise HreError("統合先の項目を選んでください")
+            status = {"approve": "approved", "reject": "deprecated", "merge": "merged"}[decision]
+            set_field_status(conn, actor, rid, status, merged_into)
+            return {"key": key, "decision": decision}
+    raise HreError(f"確認の項目 {key!r} が見つかりません")
+
+
+def _decide_write(conn: Connection, actor: Actor, rid: str, decision: str) -> dict:
+    r = _one(conn, """SELECT id::text, workspace_id::text, kind, payload, status FROM hre.review_requests
+                       WHERE id = %s""", (rid,))
+    if r is None:
+        raise HreError("その確認待ちは見つかりません（削除されたか、別の人が決めました）")
+    _check_write(actor, r["workspace_id"])
+    if r["status"] != "pending":
+        raise HreError("その確認待ちは既に決まっています")
+    if decision == "merge":
+        raise HreError("書き込みは統合できません")
+    result_id = None
+    if decision == "approve":
+        p = dict(r["payload"])
+        if p.get("source_id") and not _one(conn, "SELECT 1 FROM hre.sources WHERE id = %s", (p["source_id"],)):
+            p["source_id"] = None   # 出典だけ消えていたら、出典なしで人の書き込みにする
+        for k in ("entity_id", "source_entity_id", "target_entity_id"):   # 待っているあいだに統合された人は統合先へ
+            if p.get(k):
+                p[k] = _one(conn, """WITH RECURSIVE m(id, next) AS (
+                                         SELECT id, merged_into_id FROM hre.entities WHERE id = %s
+                                         UNION ALL
+                                         SELECT e.id, e.merged_into_id FROM hre.entities e JOIN m ON e.id = m.next)
+                                     SELECT id::text FROM m WHERE next IS NULL""", (p[k],))["id"]
+        if r["kind"] == "fact":
+            result_id = record_fact(conn, actor, **p)["fact_id"]
+        else:
+            out = add_relationship(conn, actor, p["relation_type"], p["source_entity_id"], p["target_entity_id"],
+                                   p.get("valid_from"), p.get("source_id"))
+            result_id = out["relationship_id"]
+    with conn.transaction():
+        conn.execute("""UPDATE hre.review_requests SET status = %s, decided_by = %s, decided_at = now(), result_id = %s
+                         WHERE id = %s""",
+                     ("approved" if decision == "approve" else "rejected", actor.id, result_id, rid))
+        _audit(conn, actor, r["workspace_id"], "set_status", "review_requests", rid, [],
+               {"decision": decision, "result_id": result_id})
+    return {"key": f"w:{rid}", "decision": decision, "result_id": result_id}
+
+
+def undo_review(conn: Connection, actor: Actor, key: str) -> dict:
+    """直前の判断を取り消して確認待ちに戻す。承認で書いた主張は取り消す（関係は人物カードから終了にする）。"""
+    if actor.kind != "human":
+        raise HreError("確認は人だけが行えます")
+    typ, _, rid = key.partition(":")
+    match typ:
+        case "w":
+            r = _one(conn, """SELECT workspace_id::text, kind, status, result_id::text FROM hre.review_requests
+                               WHERE id = %s""", (rid,))
+            if r is None or r["status"] == "pending":
+                raise HreError("元に戻すものがありません")
+            _check_write(actor, r["workspace_id"])
+            if r["status"] == "approved" and r["kind"] == "relationship":
+                raise HreError("承認した関係は、人物カードから「終了」にしてください")
+            if r["status"] == "approved" and r["result_id"]:
+                retract_fact(conn, actor, r["result_id"], "確認の取り消し")
+            with conn.transaction():
+                conn.execute("""UPDATE hre.review_requests SET status = 'pending', decided_by = NULL, decided_at = NULL,
+                                       result_id = NULL WHERE id = %s""", (rid,))
+                _audit(conn, actor, r["workspace_id"], "set_status", "review_requests", rid, [], {"decision": "undo"})
+        case "s":
+            ws_id = _ws_of(conn, "sources", rid)
+            _check_write(actor, ws_id)
+            with conn.transaction():
+                conn.execute("UPDATE hre.sources SET trusted = false, reviewed_at = NULL WHERE id = %s", (rid,))
+                _audit(conn, actor, ws_id, "update", "sources", rid, [], {"trusted": False, "undo": True})
+        case "f":
+            _require_admin(actor)
+            with conn.transaction():
+                row = _one(conn, """UPDATE hre.field_definitions SET status = 'proposed', merged_into_id = NULL,
+                                           updated_at = now()
+                                     WHERE key = %s AND status IN ('approved', 'deprecated', 'merged')
+                                 RETURNING id::text""", (rid,))
+                if row is None:
+                    raise HreError("元に戻すものがありません")
+                # 統合したときに足した別名（統合元のキー）も外す
+                conn.execute("DELETE FROM hre.field_aliases WHERE alias = %s AND field_id <> %s", (rid, row["id"]))
+                _audit(conn, actor, None, "set_status", "field_definitions", row["id"], [],
+                       {"key": rid, "status": "proposed", "undo": True})
+        case _:
+            raise HreError(f"確認の項目 {key!r} が見つかりません")
+    return {"key": key, "undone": True}
 
 
 # --- 管理者だけ ---------------------------------------------------------------

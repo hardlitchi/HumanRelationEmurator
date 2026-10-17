@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}確認{% endblock %}
+{% block flash %}
+{% if flash %}
+<div class="flash ok inbox-flash">
+  <span>{{ flash }}</span>
+  {% if undo %}
+  <form method="post" action="/inbox/undo">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="key" value="{{ undo }}">
+    <input type="hidden" name="skip" value="{{ skip }}"><input type="hidden" name="done" value="{{ done }}">
+    <button class="link">元に戻す</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}
+{% block body %}
+<div class="inbox">
+{% if total %}
+<div class="progress" aria-label="進み具合">
+  <progress value="{{ done }}" max="{{ total }}"></progress>
+  <span class="small"><strong>{{ done }}</strong> / {{ total }} 件{% if item %} · のこり {{ left }}{% endif %}</span>
+</div>
+{% endif %}
+
+{% if not item %}
+<section class="card done">
+  {% if skipped %}
+  <p class="big">ひとまず完了 👍</p>
+  <p>「あとで」にした {{ skipped }} 件が残っています。</p>
+  <p><a href="/inbox?done={{ done }}" class="button">あとでにした分を見る</a></p>
+  {% elif done %}
+  <p class="big">ぜんぶ終わり 🎉</p>
+  <p>{{ done }} 件さばきました。おつかれさまです。</p>
+  <p><a href="/" class="button secondary">ホームへ</a></p>
+  {% else %}
+  <p class="big">確認待ちはありません ✨</p>
+  <p class="muted">AI が書けなかったこと・設定資料・新しい項目の提案が来ると、ここに1件ずつ出ます。</p>
+  {% endif %}
+</section>
+{% else %}
+
+<section class="card review">
+{% if item.type == "write" %}
+  <p class="kicker"><span class="tag warn">AI が書けなかったこと</span> <span class="muted small">{{ item.workspace_name }}</span></p>
+  {% if item.kind == "fact" %}
+  <h1><a href="/e/{{ item.subject_id }}">{{ item.subject_name }}</a> の<br>「{{ item.field.label if item.field else item.payload.field }}」を</h1>
+  <p class="answer">{{ item.value_text }}</p>
+  <p class="ask">にしてよいですか？</p>
+  {% if item.current %}<p class="small">いまの値: {% for v in item.current %}<span class="tag">{{ v }}</span> {% endfor %}</p>{% endif %}
+  <p class="muted small">{{ item.requested_by or 'AI' }} が提案 · {{ EPISTEMIC.get(item.payload.epistemic, item.payload.epistemic) }} · 確度 {{ item.payload.confidence|pct }}% · {{ item.requested_at|dt }}</p>
+  {% if item.payload.note %}<p class="small">メモ: {{ item.payload.note }}</p>{% endif %}
+  {% else %}
+  <h1><a href="/e/{{ item.subject_id }}">{{ item.source_name }}</a> を<br>{{ item.target_name }} の</h1>
+  <p class="answer">{{ item.relation.label if item.relation else item.payload.relation_type }}</p>
+  <p class="ask">としてつないでよいですか？</p>
+  <p class="muted small">{{ item.requested_by or 'AI' }} が提案 · {{ item.requested_at|dt }}</p>
+  {% endif %}
+  {% if item.source %}
+  <details class="evidence"><summary>根拠: {{ item.source.title or item.source.kind }}{% if not item.source.trusted %}（未確認）{% endif %}</summary>
+    <pre class="source">{{ item.source.preview or '（本文なし）' }}</pre>
+    <a href="/s/{{ item.source.id }}">全文を見る</a></details>
+  {% else %}
+  <p class="muted small">根拠の資料は付いていません。</p>
+  {% endif %}
+  <p class="hint small">承認すると、あなたの書き込みとして記録されます。</p>
+  {% set yes, no = "書いてOK", "書かない" %}
+
+{% elif item.type == "source" %}
+  <p class="kicker"><span class="tag">設定資料</span> <span class="muted small">{{ item.workspace_name }}</span></p>
+  <h1>この資料を信頼しますか？</h1>
+  <p><strong>{{ item.source.title or '（無題）' }}</strong></p>
+  <p class="muted small">{{ item.source.captured_by or '' }} が取り込み · {{ item.source.captured_at|dt }}</p>
+  <pre class="source short">{{ item.source.preview or '（本文なし）' }}</pre>
+  <p><a href="/s/{{ item.id }}">全文を見る</a></p>
+  <p class="hint small">信頼すると、この資料を根拠に AI が人格（一人称・口調など）や運営・管理者の関係を書けるようになります。配信コメントなど他人が書けるものは信頼しないでください。</p>
+  {% set yes, no = "信頼する", "信頼しない" %}
+
+{% elif item.type == "field" %}
+  {% set f = item.field %}
+  <p class="kicker"><span class="tag">新しい項目の提案</span>{% if f.sensitivity == 'sensitive' %} <span class="tag warn">機微情報</span>{% endif %}</p>
+  <h1>項目「{{ f.label }}」を<br>使えるようにしますか？</h1>
+  <p class="muted small"><code>{{ f.key }}</code> · {{ f.value_type }}{% if f.enum_options %}（{{ f.enum_options|join(' / ') }}）{% endif %} · {{ f.applies_to|join(', ') }}</p>
+  {% if f.description %}<p>{{ f.description }}</p>{% endif %}
+  <p class="muted small">{{ f.created_by or 'AI' }} が提案 · 使用 {{ f.usage_count }} 件{% if f.usage_count %}（使わないにしても今ある分は残ります）{% endif %}</p>
+  {% if item.similar %}
+  <div class="similar">
+    <p class="small"><strong>似た項目があります。</strong>同じ意味ならまとめると表記ゆれを防げます。</p>
+    {% for o in item.similar %}
+    <form method="post" action="/inbox/decide">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="key" value="{{ item.key }}">
+      <input type="hidden" name="skip" value="{{ skip }}"><input type="hidden" name="done" value="{{ done }}">
+      <input type="hidden" name="merged_into" value="{{ o.key }}">
+      <button name="decision" value="merge" class="secondary wide">「{{ o.label }}」にまとめる</button>
+    </form>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% set yes, no = "承認", "使わない" %}
+{% endif %}
+</section>
+
+<form method="post" action="/inbox/decide" class="decide">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="key" value="{{ item.key }}">
+  <input type="hidden" name="skip" value="{{ skip }}"><input type="hidden" name="done" value="{{ done }}">
+  <button name="decision" value="approve" class="yes" data-key="y">{{ yes }}</button>
+  <button name="decision" value="reject" class="no" data-key="n">{{ no }}</button>
+  <a href="/inbox?skip={{ ((skip ~ ',' ~ item.key) if skip else item.key)|urlencode }}&amp;done={{ done }}" class="button later" data-key="l">あとで</a>
+</form>
+{% endif %}
+</div>
+{% endblock %}
