@@ -141,10 +141,29 @@ def test_interaction_and_merge(conn, world):
     service.merge_entities(conn, world.agent_a, x2, x1)
     merged = service.get_entity(conn, world.agent_a, x2)
     assert merged["merged_into"] == x1
-    assert {i["scheme"] for i in service.get_entity(conn, world.agent_a, x1)["identifiers"]} == {"youtube", "x"}
+    assert {i["scheme"] for i in service.get_entity(conn, world.agent_a, x1)["identifiers"]} == {"youtube", "x", "name"}
     with pytest.raises(HreError, match="閲覧権限|across workspaces|書き込み権限"):
         other = service.create_entity(conn, world.agent_b, "person", "他人", world.b)["id"]
         service.merge_entities(conn, world.agent_a, other, x1)
+
+
+def test_merged_name_stays_and_writes_follow_merge(conn, world):
+    x1 = service.create_entity(conn, world.agent_a, "person", "はー", world.a,
+                               [{"scheme": "name", "value": "はー"}])["id"]
+    x2 = service.create_entity(conn, world.agent_a, "person", "はあちゃん", world.a)["id"]
+    service.merge_entities(conn, world.agent_a, x2, x1)
+    # 統合された側の名前は別名として残り、その名前でも統合先が見つかる
+    names = {i["value"] for i in service.get_entity(conn, world.agent_a, x1)["identifiers"] if i["scheme"] == "name"}
+    assert names == {"はー", "はあちゃん"}
+    assert [e["id"] for e in service.find_entities(conn, world.agent_a, "はあちゃん", world.a)] == [x1]
+    # 統合を知らないクライアントが古い ID に書いても統合先に入る
+    service.record_fact(conn, world.agent_a, "hobbies", "将棋", "stated", entity_id=x2)
+    service.record_interaction(conn, world.agent_a, "2026-10-17T20:00:00+09:00", "in_person",
+                               [{"entity_id": x2}, {"entity_id": x1}], world.a, summary="話した")
+    card = service.get_entity(conn, world.agent_a, x1)
+    assert any(f["field_key"] == "hobbies" for f in card["facts"])
+    n = conn.execute("SELECT count(*) FROM hre.interaction_participants WHERE entity_id = %s", (x2,)).fetchone()
+    assert (n["count"] if isinstance(n, dict) else n[0]) == 0
 
 
 def test_erase_is_admin_only_and_audited(conn, world):
