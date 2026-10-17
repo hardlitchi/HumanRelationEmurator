@@ -8,6 +8,7 @@
 - 人が書いた主張は「人間による書き込み」なので、人格フィールドや管理者関係もここから書ける
 - AI 連携: claude.ai などの OAuth 接続の許可画面（/connect）と、接続の一覧・取り消し（/connectors）
 - 確認（/inbox）: 人が決めること（エージェントが書けなかった書き込み・未確認の設定資料・提案された項目）を1件ずつ
+- パスキー: ログイン設定（/account）で登録・削除し、ログイン画面の「パスキーでログイン」で入れる（passkey.py）
 """
 
 from __future__ import annotations
@@ -33,12 +34,12 @@ from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from . import oauth, service
+from . import oauth, passkey, service
 from .db import pool
 
 HERE = Path(__file__).resolve().parent
@@ -230,12 +231,21 @@ def login_form(request: Request) -> Response:
                                                               "needs_setup": needs_setup})
 
 
+def _safe_next(nxt: Any) -> str:
+    nxt = str(nxt or "/")
+    return nxt if nxt.startswith("/") and not nxt.startswith("//") else "/"
+
+
+def _set_session(request: Request, resp: Response, actor_id: str, token_hash: str) -> None:
+    resp.set_cookie(COOKIE, request.app.state.sessions.issue(actor_id, token_hash),
+                    max_age=SESSION_SECONDS, httponly=True, samesite="lax",
+                    secure=request.app.state.secure_cookies)
+
+
 async def login(request: Request) -> Response:
     form = await request.form()
     token = str(form.get("token", "")).strip()
-    nxt = str(form.get("next", "/"))
-    if not nxt.startswith("/") or nxt.startswith("//"):
-        nxt = "/"
+    nxt = _safe_next(form.get("next"))
 
     def check() -> service.Actor | None:
         with pool().connection() as conn:
@@ -248,10 +258,95 @@ async def login(request: Request) -> Response:
                                                               "人間用（kind = human）のトークンを使ってください",
                                                        "next": nxt}), status_code=303)
     resp = RedirectResponse(nxt, status_code=303)
-    resp.set_cookie(COOKIE, request.app.state.sessions.issue(actor.id, service.hash_token(token)),
-                    max_age=SESSION_SECONDS, httponly=True, samesite="lax",
-                    secure=request.app.state.secure_cookies)
+    _set_session(request, resp, actor.id, service.hash_token(token))
     return resp
+
+
+# ---------------------------------------------------------------------------
+# パスキー（static/passkey.js から JSON で呼ぶ）
+# ---------------------------------------------------------------------------
+
+def _rp(request: Request) -> tuple[str, str]:
+    return passkey.relying_party(str(request.base_url))
+
+
+async def _json_body(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _json_error(e: Exception, status: int = 400) -> JSONResponse:
+    return JSONResponse({"error": str(e)}, status_code=status)
+
+
+async def passkey_login_options(request: Request) -> Response:
+    def run() -> dict:
+        with pool().connection() as conn, conn.transaction():
+            return passkey.login_options(conn, _rp(request))
+    return JSONResponse(await anyio.to_thread.run_sync(run))
+
+
+async def passkey_login(request: Request) -> Response:
+    body = await _json_body(request)
+
+    def run() -> tuple[str, str]:
+        with pool().connection() as conn, conn.transaction():
+            return passkey.login(conn, _rp(request), str(body.get("request", "")), body.get("credential") or {})
+    try:
+        actor_id, token_hash = await anyio.to_thread.run_sync(run)
+    except service.HreError as e:
+        return _json_error(e)
+    resp = JSONResponse({"redirect": _safe_next(body.get("next"))})
+    _set_session(request, resp, actor_id, token_hash)
+    return resp
+
+
+def json_action(handler):
+    """ログイン中の人の JSON の POST: CSRF（本文の csrf）を確認し、1トランザクションで実行する。"""
+    async def endpoint(request: Request) -> Response:
+        body = await _json_body(request)
+
+        def run() -> Response:
+            with pool().connection() as conn, conn.transaction():
+                try:
+                    me = _current(conn, request)
+                except LoginRequired:
+                    return _json_error("ログインし直してください", 401)
+                expected = request.app.state.sessions.csrf(request.cookies[COOKIE])
+                if not hmac.compare_digest(str(body.get("csrf", "")), expected):
+                    return _json_error("CSRF token mismatch", 403)
+                try:
+                    return JSONResponse(handler(request, conn, me, body))
+                except service.HreError as e:
+                    return _json_error(e)
+        return await anyio.to_thread.run_sync(run)
+    endpoint.__name__ = handler.__name__
+    return endpoint
+
+
+@page
+def account(request, conn, me):
+    return "account.html", {"passkeys": passkey.list_passkeys(conn, me), "rp_id": _rp(request)[0]}
+
+
+@json_action
+def passkey_register_options(request, conn, me, body):
+    return passkey.registration_options(conn, me, _rp(request))
+
+
+@json_action
+def passkey_register(request, conn, me, body):
+    return passkey.register(conn, me, _rp(request), str(body.get("request", "")), body.get("credential") or {},
+                            str(body.get("name", "")))
+
+
+@action
+def passkey_delete(request, conn, me, form):
+    passkey.delete_passkey(conn, me, str(form["id"]))
+    return _back(request, "/account", ok="パスキーを削除しました")
 
 
 async def logout(request: Request) -> Response:
@@ -693,6 +788,12 @@ def create_app(secret: str | None = None, secure_cookies: bool = True,
         Route("/login", login_form, methods=["GET"]),
         Route("/login", login, methods=["POST"]),
         Route("/logout", logout, methods=["POST"]),
+        Route("/login/passkey/options", passkey_login_options, methods=["POST"]),
+        Route("/login/passkey", passkey_login, methods=["POST"]),
+        Route("/account", account),
+        Route("/account/passkeys/options", passkey_register_options, methods=["POST"]),
+        Route("/account/passkeys", passkey_register, methods=["POST"]),
+        Route("/account/passkeys/delete", passkey_delete, methods=["POST"]),
         Route("/", home),
         Route("/activity", activity),
         Route("/inbox", inbox),

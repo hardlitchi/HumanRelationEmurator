@@ -24,3 +24,28 @@ CREATE TABLE IF NOT EXISTS hre.review_requests (
     result_id     uuid                             -- 承認で作った fact / relationship
 );
 CREATE INDEX IF NOT EXISTS review_requests_pending ON hre.review_requests (workspace_id) WHERE status = 'pending';
+
+-- パスキー（WebAuthn）でのログイン（2026-10-17）。人間（kind = human）の actor だけが登録できる。
+-- 公開鍵だけを保存する。ログインで発行するセッションは、その時点の actors.token_hash に結びつくので、
+-- トークンを rotate すると既存のセッションは切れる（パスキーはそのまま使える）。revoke した actor は入れない
+CREATE TABLE IF NOT EXISTS hre.passkeys (
+    id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_id       uuid NOT NULL REFERENCES hre.actors(id) ON DELETE CASCADE,
+    credential_id  bytea NOT NULL UNIQUE,
+    public_key     bytea NOT NULL,                 -- COSE 形式
+    sign_count     bigint NOT NULL DEFAULT 0,
+    transports     text[] NOT NULL DEFAULT '{}',
+    name           text NOT NULL,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    last_used_at   timestamptz
+);
+CREATE INDEX IF NOT EXISTS passkeys_actor_idx ON hre.passkeys (actor_id);
+
+-- 登録・ログインの途中で発行した challenge。1回使うと消す（id はハッシュだけ保存）
+CREATE TABLE IF NOT EXISTS hre.passkey_challenges (
+    id_hash     text PRIMARY KEY,
+    purpose     text NOT NULL CHECK (purpose IN ('register', 'login')),
+    actor_id    uuid REFERENCES hre.actors(id) ON DELETE CASCADE,   -- register のときの登録する人
+    challenge   bytea NOT NULL,
+    expires_at  timestamptz NOT NULL
+);

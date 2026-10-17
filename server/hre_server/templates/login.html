@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}ログイン{% endblock %}
+{% block scripts %}<script src="/static/passkey.js" defer></script>{% endblock %}
 {% block body %}
 <section class="card narrow">
   <h1>ログイン</h1>
@@ -9,6 +10,11 @@
   <pre class="source"><code>docker compose exec mcp hre-admin bootstrap</code></pre>
   <p class="muted">docker compose を使っていなければ <code>hre-admin bootstrap</code>。</p>
   {% endif %}
+  <div class="stack" data-passkey-login data-next="{{ next }}" hidden>
+    <button type="button">パスキーでログイン</button>
+    <p class="muted small" data-passkey-status role="status"></p>
+    <p class="muted small">パスキーはログイン後に「ログイン設定」（右上の名前）で登録できます。まだなら下のトークンで入ってください。</p>
+  </div>
   <form method="post" action="/login" class="stack">
     <input type="hidden" name="next" value="{{ next }}">
     <input type="password" name="token" placeholder="hre_..." autocomplete="current-password" required autofocus>
