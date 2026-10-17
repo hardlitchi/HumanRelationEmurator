@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}ログイン設定{% endblock %}
+{% block scripts %}<script src="/static/passkey.js" defer></script>{% endblock %}
+{% block body %}
+<section class="card narrow">
+  <h1>パスキー</h1>
+  <p class="muted">登録すると、次からトークンを入力せずに、この端末の指紋・顔・画面ロックでログインできます。
+    スマホと PC など、使う端末ごとに登録してください（同じアカウントに同期されるパスキーなら1回で足ります）。</p>
+  {% if passkeys %}
+  <ul class="list">
+    {% for p in passkeys %}
+    <li class="row">
+      <div>
+        <strong>{{ p.name }}</strong>
+        <div class="muted small">登録 {{ p.created_at|dt }} · 最後に使った日時 {{ p.last_used_at|dt or "まだ使っていません" }}</div>
+      </div>
+      <form method="post" action="/account/passkeys/delete">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="id" value="{{ p.id }}">
+        <button class="secondary" data-confirm="「{{ p.name }}」を削除しますか？この端末ではパスキーでログインできなくなります">削除</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>まだ登録されていません。</p>
+  {% endif %}
+  <div class="stack" data-passkey-register>
+    <label>名前（どの端末か分かるように）
+      <input name="passkey-name" maxlength="60" placeholder="例: iPhone、仕事用 PC">
+    </label>
+    <button type="button">この端末のパスキーを登録</button>
+    <p class="muted small" data-passkey-status role="status"></p>
+  </div>
+  <p class="muted small">パスキーは <code>{{ rp_id }}</code> に結びつきます。管理者がトークンを再発行すると、ログイン中の端末はログインし直しになりますが、パスキーはそのまま使えます。</p>
+</section>
+{% endblock %}

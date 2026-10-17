@@ -145,3 +145,4 @@ a.button.secondary, .decide .later { background: var(--tag); color: var(--fg); }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .decide .yes { color: #111; }
 }
+[data-passkey-status]:empty { display: none; }

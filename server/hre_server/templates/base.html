@@ -8,6 +8,7 @@
 <title>{% block title %}人間関係{% endblock %} · HRE</title>
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/app.js" defer></script>
+{% block scripts %}{% endblock %}
 </head>
 <body>
 <header class="top">
@@ -20,7 +21,7 @@
     <a href="/connectors">AI 連携</a>
     {% if me.is_admin %}<a href="/admin/fields">マスター</a><a href="/admin/access">アクセス</a>{% endif %}
   </nav>
-  <form method="post" action="/logout" class="logout"><button class="link">{{ me.name }} · ログアウト</button></form>
+  <form method="post" action="/logout" class="logout"><a href="/account" title="ログイン設定（パスキー）">{{ me.name }}</a> · <button class="link">ログアウト</button></form>
   {% endif %}
 </header>
 <main>
