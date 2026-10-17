@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -116,6 +117,21 @@ def _ws_of(conn: Connection, table: str, row_id: str) -> str:
     if row is None:
         raise HreError(f"{table} {row_id} が見つかりません")
     return row["workspace_id"]
+
+
+def _live(conn: Connection, entity_id: str | None) -> str | None:
+    """統合済みの人の ID なら統合先（の最後）の ID。統合を知らないクライアントの書き込みも統合先に入る。"""
+    try:
+        uuid.UUID(str(entity_id))
+    except ValueError:
+        return entity_id  # ID でないものはそのまま（見つからないエラーは呼び出し側で）
+    row = _one(conn, """WITH RECURSIVE m(id, next, depth) AS (
+                            SELECT id, merged_into_id, 0 FROM hre.entities WHERE id = %s
+                            UNION ALL
+                            SELECT e.id, e.merged_into_id, m.depth + 1 FROM hre.entities e JOIN m ON e.id = m.next
+                             WHERE m.depth < 20)
+                        SELECT id::text FROM m WHERE next IS NULL""", (entity_id,))
+    return row["id"] if row else entity_id
 
 
 def _check_read(conn: Connection, actor: Actor, ws_id: str) -> None:
@@ -335,6 +351,7 @@ def create_entity(conn: Connection, actor: Actor, kind: str, display_name: str, 
 
 
 def add_identifier(conn: Connection, actor: Actor, entity_id: str, scheme: str, value: str) -> dict:
+    entity_id = _live(conn, entity_id)
     ws_id = _ws_of(conn, "entities", entity_id)
     _check_write(actor, ws_id)
     try:
@@ -421,6 +438,12 @@ def merge_entities(conn: Connection, actor: Actor, from_id: str, into_id: str) -
     try:
         with conn.transaction():
             conn.execute("SELECT hre.merge_entities(%s, %s, %s)", (from_id, into_id, actor.id))
+            # 統合された側の表示名は別名（name 識別子）として残す。find_entities でその名前でも見つかる
+            conn.execute("""INSERT INTO hre.entity_identifiers (workspace_id, entity_id, scheme, value)
+                            SELECT f.workspace_id, %s, 'name', f.display_name
+                              FROM hre.entities f JOIN hre.entities t ON t.id = %s
+                             WHERE f.id = %s AND f.display_name <> t.display_name
+                            ON CONFLICT DO NOTHING""", (into_id, into_id, from_id))
     except errors.Error as e:
         raise _db_error(e) from e
     return {"merged": from_id, "into": into_id}
@@ -480,13 +503,14 @@ def record_fact(conn: Connection, actor: Actor, field: str, value: Any, epistemi
                 note: str | None = None) -> dict:
     if (entity_id is None) == (relationship_id is None):
         raise HreError("entity_id か relationship_id のどちらか一方を指定してください")
+    entity_id = _live(conn, entity_id)
     ws_id = _ws_of(conn, "entities", entity_id) if entity_id else _ws_of(conn, "relationships", relationship_id)
     _check_write(actor, ws_id)
     f = _field(conn, field)
     # MCP クライアントは "5" のような数字の文字列を数値にして送ってくることがある。選択肢は文字列なのでそろえる
     if f["value_type"] == "enum" and isinstance(value, int | float) and not isinstance(value, bool):
         value = str(int(value)) if float(value).is_integer() else str(value)
-    value_json, value_entity = (None, str(value)) if f["value_type"] == "entity_ref" else (Jsonb(value), None)
+    value_json, value_entity = (None, _live(conn, str(value))) if f["value_type"] == "entity_ref" else (Jsonb(value), None)
     try:
         with conn.transaction():
             row = _one(conn, """INSERT INTO hre.facts (workspace_id, entity_id, relationship_id, field_id, value,
@@ -529,6 +553,7 @@ def retract_fact(conn: Connection, actor: Actor, fact_id: str, reason: str | Non
 
 def add_relationship(conn: Connection, actor: Actor, relation_type: str, source_entity_id: str,
                      target_entity_id: str, valid_from: str | None = None, source_id: str | None = None) -> dict:
+    source_entity_id, target_entity_id = _live(conn, source_entity_id), _live(conn, target_entity_id)
     ws_id = _ws_of(conn, "entities", source_entity_id)
     _check_write(actor, ws_id)
     rt = _relation_type(conn, relation_type)
@@ -576,6 +601,11 @@ def record_interaction(conn: Connection, actor: Actor, occurred_at: str, channel
     ws = _resolve_ws(conn, actor, workspace, "write")
     if not participants:
         raise HreError("participants を1人以上指定してください")
+    live: dict[str, dict] = {}
+    for p in participants:  # 統合済みの人は統合先へ。同じ人が2回にならないように
+        eid = _live(conn, p["entity_id"])
+        live.setdefault(str(eid), {**p, "entity_id": eid})
+    participants = list(live.values())
     try:
         with conn.transaction():
             row = _one(conn, """INSERT INTO hre.interactions (workspace_id, occurred_at, ended_at, channel, depth,
@@ -1257,11 +1287,7 @@ def _decide_write(conn: Connection, actor: Actor, rid: str, decision: str) -> di
             p["source_id"] = None   # 出典だけ消えていたら、出典なしで人の書き込みにする
         for k in ("entity_id", "source_entity_id", "target_entity_id"):   # 待っているあいだに統合された人は統合先へ
             if p.get(k):
-                p[k] = _one(conn, """WITH RECURSIVE m(id, next) AS (
-                                         SELECT id, merged_into_id FROM hre.entities WHERE id = %s
-                                         UNION ALL
-                                         SELECT e.id, e.merged_into_id FROM hre.entities e JOIN m ON e.id = m.next)
-                                     SELECT id::text FROM m WHERE next IS NULL""", (p[k],))["id"]
+                p[k] = _live(conn, p[k])
         if r["kind"] == "fact":
             result_id = record_fact(conn, actor, **p)["fact_id"]
         else:

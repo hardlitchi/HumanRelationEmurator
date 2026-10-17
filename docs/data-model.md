@@ -137,7 +137,7 @@ AITuber グループで使うため、管理者本人・各 AITuber・グルー�
 「田中さん」「田中太郎」「t.tanaka@…」が別ノードになる問題は、フィールド名の揺れより深刻なので最初から入れている。
 
 - `entity_identifiers`: メール・電話・SNS ハンドル・呼び名などを持つ。`name` 以外は全体で一意なので、同じメールで2人目を作ろうとすると失敗し、エージェントは既存の人を見つけられる。
-- `merge_entities(from, into, actor)`: 主張・関係・参加記録・識別子をすべて付け替え、統合元は `merged_into_id` を入れて残す（古い ID で参照されても辿れる）。
+- `merge_entities(from, into, actor)`: 主張・関係・参加記録・識別子をすべて付け替え、統合元は `merged_into_id` を入れて残す（古い ID で参照されても辿れる）。統合元の表示名は統合先の `name` 識別子（別名）として残るので、その名前で `find_entities` しても統合先が見つかる。統合元の古い ID を指定した書き込み（`record_fact`・`add_relationship`・`record_interaction`・`add_identifier`）は統合先に入る。
 
 ### 5. 関係の強さ・密度・クラスタは派生値
 

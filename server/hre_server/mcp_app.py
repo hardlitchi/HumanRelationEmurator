@@ -170,7 +170,8 @@ def build_server(auth_url: str | None = None) -> MCPServer:
 
     @mcp.tool()
     def merge_entities(from_id: Id, into_id: Id) -> dict:
-        """同一人物が2つのノードになっていたら統合する（from の記録を into に付け替える）。"""
+        """同一人物が2つのノードになっていたら統合する（from の記録を into に付け替え、from の名前は別名として残す）。
+        以後 from の ID への書き込みは into に入る。"""
         return _call(service.merge_entities, _write=True, from_id=from_id, into_id=into_id)
 
     @mcp.tool()
