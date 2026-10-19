@@ -70,7 +70,29 @@ WITH seed (key, label, value_type, enum_options, applies_to, cardinality, sensit
     ('persona_values', '人格の価値観', 'text', NULL, '{person}', 'many', 'normal', true,
         'キャラクターの価値観・信条。実在の人の信条は記録しない（要配慮個人情報）', '{価値観}'),
     ('ng_topics', 'NG・避ける話題', 'text', NULL, '{person}', 'many', 'normal', true,
-        NULL, '{ng,地雷,避ける話題,ng話題}')
+        'キャラクター（人格）自身が配信で扱わない話題。ほかの人について避ける話題は topics_to_avoid', '{ng,地雷,避ける話題,ng話題}'),
+    -- 基本情報
+    ('name_reading', '読み', 'text', NULL, '{person,organization,group}', 'one', 'normal', true,
+        '表示名の読み（ひらがな）。読み上げ（TTS）と検索に使う', '{よみ,読み方,ふりがな,フリガナ,furigana,kana,reading}'),
+    ('legal_name', '本名', 'text', NULL, '{person}', 'one', 'sensitive', false,
+        '戸籍・公的書類の氏名。芸名・キャラ名・呼び名は表示名か name 識別子に入れる。VTuber・AITuber・リスナーの本名は記録しない',
+        '{本名,氏名,戸籍名,real_name}'),
+    ('skills', 'スキル・特技', 'text', NULL, '{person}', 'many', 'personal', true,
+        '1件につき1つ。仕事の技能も趣味の特技も含む。職種は occupation', '{スキル,特技,得意なこと,得意,skill}'),
+    -- 配慮（AITuber が配信で話すときに persona_context が守る）
+    ('is_minor', '未成年', 'boolean', NULL, '{person}', 'one', 'personal', false,
+        '本人の発言や明らかな描写から未成年と分かったら true。学生というだけでは付けない。true の人について新しい個人情報は記録しない',
+        '{未成年,minor}'),
+    ('stream_mention_policy', '配信での扱い', 'enum', '{ok,nickname_only,avoid}', '{person}', 'one', 'normal', true,
+        'ok: 触れてよい / nickname_only: 呼び方（calls_them）だけで触れ、それ以外の情報は話さない / avoid: 配信では触れない。本人の希望を記録する',
+        '{配信での扱い,配信で触れない,名前出しng,配信ng,mention_policy}'),
+    ('topics_to_avoid', '避けたい話題（相手）', 'text', NULL, '{person}', 'many', 'personal', true,
+        'この人と話すとき・この人について話すときに避ける話題。キャラクター自身の NG は ng_topics', '{触れない話題,avoid_topics}'),
+    -- 関係（自分から見た続柄）
+    ('kinship_term', '続柄', 'text', NULL, '{relationship}', 'one', 'personal', true,
+        'family / partner 関係に付ける、自分（ワークスペースの主）から見た相手の続柄。次の語のどれかで書く: '
+        '父・母・兄・姉・弟・妹・祖父・祖母・子・孫・叔父・叔母・いとこ・甥・姪・義父・義母・義兄・義姉・義弟・義妹・婚約者・夫・妻・恋人',
+        '{続柄,続き柄,kinship}')
 ),
 ins AS (
     INSERT INTO field_definitions (key, label, value_type, enum_options, applies_to, cardinality,
@@ -85,27 +107,36 @@ SELECT DISTINCT normalize_label(a), ins.id
   FROM seed JOIN ins USING (key), unnest(seed.aliases) a
  WHERE normalize_label(a) <> seed.key;
 
--- key, label, directed, inverse_label, source_kinds, target_kinds, aliases
-WITH seed (key, label, directed, inverse_label, source_kinds, target_kinds, aliases) AS (
+-- key, label, directed, inverse_label, source_kinds, target_kinds, aliases, description
+-- label は source の役割、inverse_label は target の役割（有向のときだけ）
+WITH seed (key, label, directed, inverse_label, source_kinds, target_kinds, aliases, description) AS (
     VALUES
-    ('knows',            '知り合い',   false, NULL::text, '{person}'::text[], '{person}'::text[], '{知人,知り合い,acquaintance}'::text[]),
-    ('friend',           '友人',       false, NULL, '{person}', '{person}', '{友達,友人,ともだち}'),
-    ('family',           '家族',       false, NULL, '{person}', '{person}', '{家族,親族,relative}'),
-    ('partner',          'パートナー', false, NULL, '{person}', '{person}', '{恋人,配偶者,spouse}'),
-    ('colleague',        '同僚',       false, NULL, '{person}', '{person}', '{同僚,coworker}'),
-    ('manager_of',       '上司',       true,  '部下', '{person}', '{person}', '{上司,boss,manages}'),
-    ('mentor_of',        'メンター',   true,  'メンティー', '{person}', '{person}', '{メンター,師匠,mentor}'),
-    ('business_partner', '取引先',     false, NULL, '{person,organization}', '{person,organization}', '{取引先,client,顧客}'),
-    ('works_at',         '所属',       true,  '所属メンバー', '{person}', '{organization}', '{勤務先,所属,employer,works_for}'),
-    ('member_of',        'メンバー',   true,  'メンバー一覧', '{person}', '{group}', '{参加,所属グループ,belongs_to}'),
-    ('part_of',          '下部組織',   true,  '上部組織', '{organization,group}', '{organization,group}', '{子会社,部署,subsidiary}'),
-    ('operator_of',      '運営・管理者', true, '担当タレント', '{person}', '{person,organization,group}', '{管理者,運営,マネージャー,operator}'),
-    ('collaborated_with','コラボ相手', false, NULL, '{person}', '{person}', '{コラボ,collab,共演}'),
-    ('listener_of',      'リスナー',   true,  '配信者', '{person}', '{person}', '{リスナー,ファン,視聴者,fan,viewer}')
+    ('knows',            '知り合い',   false, NULL::text, '{person}'::text[], '{person}'::text[], '{知人,知り合い,acquaintance}'::text[],
+        'ほかのどれにも当てはまらない知り合い。より具体的な種類が分かればそちらを使う'),
+    ('friend',           '友人',       false, NULL, '{person}', '{person}', '{友達,友人,ともだち}', '友人。向きはない'),
+    ('family',           '家族',       false, NULL, '{person}', '{person}', '{家族,親族,relative}',
+        '家族・親族。父・母・妹などの続柄は、この関係に kinship_term（自分から見た続柄）で付ける'),
+    ('partner',          'パートナー', false, NULL, '{person}', '{person}', '{恋人,配偶者,spouse}',
+        '恋人・婚約者・配偶者。段階は kinship_term（恋人・婚約者・夫・妻）で表し、変わったら新しい主張を足す'),
+    ('colleague',        '同僚',       false, NULL, '{person}', '{person}', '{同僚,coworker}', '同じ職場・チームで働く人'),
+    ('manager_of',       '上司',       true,  '部下', '{person}', '{person}', '{上司,boss,manages}', 'source が target の上司'),
+    ('mentor_of',        'メンター',   true,  'メンティー', '{person}', '{person}', '{メンター,師匠,mentor}', 'source が target を指導している'),
+    ('business_partner', '取引先',     false, NULL, '{person,organization}', '{person,organization}', '{取引先,client,顧客}', '仕事上の取引の相手'),
+    ('works_at',         '所属',       true,  '所属メンバー', '{person}', '{organization}', '{勤務先,所属,employer,works_for}',
+        'source（人）が target（組織）に勤めている・所属している'),
+    ('member_of',        'メンバー',   true,  'メンバー一覧', '{person}', '{group}', '{参加,所属グループ,belongs_to}',
+        'source（人）が target（グループ・ユニット・サークル）のメンバー'),
+    ('part_of',          '下部組織',   true,  '上部組織', '{organization,group}', '{organization,group}', '{子会社,部署,subsidiary}',
+        'source が target の一部（子会社・部署・下部ユニット）'),
+    ('operator_of',      '運営・管理者', true, '担当タレント', '{person}', '{person,organization,group}', '{管理者,運営,マネージャー,operator}',
+        'source（人）が target（タレント・グループ・組織）を運営・管理している。人か信頼済みの出典からしか書けない'),
+    ('collaborated_with','コラボ相手', false, NULL, '{person}', '{person}', '{コラボ,collab,共演}', '配信・作品で共演したことがある'),
+    ('listener_of',      'リスナー',   true,  '配信者', '{person}', '{person}', '{リスナー,ファン,視聴者,fan,viewer}',
+        'source（リスナー）が target（配信者）の配信を見ている・応援している')
 ),
 ins AS (
-    INSERT INTO relation_types (key, label, directed, inverse_label, source_kinds, target_kinds, status)
-    SELECT key, label, directed, inverse_label, source_kinds, target_kinds, 'approved' FROM seed
+    INSERT INTO relation_types (key, label, description, directed, inverse_label, source_kinds, target_kinds, status)
+    SELECT key, label, description, directed, inverse_label, source_kinds, target_kinds, 'approved' FROM seed
     RETURNING id, key
 )
 INSERT INTO relation_type_aliases (alias, relation_type_id)
@@ -114,6 +145,8 @@ SELECT DISTINCT normalize_label(a), ins.id
  WHERE normalize_label(a) <> seed.key;
 
 -- 人格・管理者関係は、配信チャット等からの書き換えを防ぐ
+-- 本名は身バレ・デマの書き込みを防ぐため同じく保護する
 UPDATE field_definitions SET requires_trusted_source = true
- WHERE key IN ('persona_type', 'first_person', 'speech_style', 'catchphrases', 'backstory', 'persona_values', 'ng_topics');
+ WHERE key IN ('persona_type', 'first_person', 'speech_style', 'catchphrases', 'backstory', 'persona_values', 'ng_topics',
+               'legal_name');
 UPDATE relation_types SET requires_trusted_source = true WHERE key IN ('operator_of');

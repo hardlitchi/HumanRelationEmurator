@@ -98,9 +98,10 @@ CREATE INDEX field_aliases_trgm ON field_aliases USING gin (alias gin_trgm_ops);
 CREATE TABLE relation_types (
     id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     key           text NOT NULL UNIQUE CHECK (key ~ '^[a-z][a-z0-9_]*$'),
-    label         text NOT NULL,
+    label         text NOT NULL,                -- source の役割（例: manager_of なら「上司」）
+    description   text,                         -- どんなときに使うか。source / target がそれぞれ何か
     directed      boolean NOT NULL,             -- false なら source/target の順序に意味はない
-    inverse_label text,                         -- 有向のとき、逆向きから見た表示名（例: 上司 ↔ 部下）
+    inverse_label text,                         -- 有向のとき、target の役割（例: 上司 ↔ 部下）
     source_kinds  text[] NOT NULL DEFAULT '{person}',
     target_kinds  text[] NOT NULL DEFAULT '{person}',
     requires_trusted_source boolean NOT NULL DEFAULT false,
@@ -345,6 +346,13 @@ CREATE TABLE IF NOT EXISTS hre.review_requests (
     result_id     uuid                             -- 承認で作った fact / relationship
 );
 CREATE INDEX IF NOT EXISTS review_requests_pending ON hre.review_requests (workspace_id) WHERE status = 'pending';
+
+-- upgrade.sql の「一度だけ流す」データ変更の記録。upgrade.sql は起動のたびに流れるので、
+-- 管理者が後から変えた値を戻さないよう、マスターの値を直す変更はここに名前を残して二度と流さない
+CREATE TABLE IF NOT EXISTS hre.schema_migrations (
+    name        text PRIMARY KEY,
+    applied_at  timestamptz NOT NULL DEFAULT now()
+);
 
 -- ===========================================================================
 -- 関数
@@ -621,15 +629,17 @@ SELECT DISTINCT ON (cf.entity_id, cf.field_id)
           CASE cf.epistemic WHEN 'stated' THEN 0 WHEN 'observed' THEN 1 WHEN 'reported' THEN 2 ELSE 3 END,
           cf.confidence DESC, cf.recorded_at DESC;
 
--- 現在続いている関係を両方向から引けるようにしたもの
+-- 現在続いている関係を両方向から引けるようにしたもの。
+-- label は from（このページの人）の役割、other_label は to（相手）の役割
 CREATE VIEW active_edges AS
 SELECT r.workspace_id, r.id AS relationship_id, rt.key AS relation_type, rt.label, rt.directed,
-       r.source_entity_id AS from_id, r.target_entity_id AS to_id, 'forward' AS direction
+       r.source_entity_id AS from_id, r.target_entity_id AS to_id, 'forward' AS direction,
+       coalesce(rt.inverse_label, rt.label) AS other_label
   FROM relationships r JOIN relation_types rt ON rt.id = r.relation_type_id
  WHERE r.valid_to IS NULL OR r.valid_to > current_date
 UNION ALL
 SELECT r.workspace_id, r.id, rt.key, coalesce(rt.inverse_label, rt.label), rt.directed,
-       r.target_entity_id, r.source_entity_id, 'inverse'
+       r.target_entity_id, r.source_entity_id, 'inverse', rt.label
   FROM relationships r JOIN relation_types rt ON rt.id = r.relation_type_id
  WHERE r.valid_to IS NULL OR r.valid_to > current_date;
 

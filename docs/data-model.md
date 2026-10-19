@@ -2,6 +2,7 @@
 
 実体は [`db/schema.sql`](../db/schema.sql)、初期マスターは [`db/seed.sql`](../db/seed.sql)、動作確認は [`db/tests/smoke.sql`](../db/tests/smoke.sql)。
 前提となった検証結果は [`requirements-validation.md`](requirements-validation.md)。
+語彙（関係の種類・フィールドの使い分け・epistemic・出典の種類など）の規約は [`ontology.md`](ontology.md)。
 
 ## 前提
 
@@ -112,7 +113,7 @@ AITuber グループで使うため、管理者本人・各 AITuber・グルー�
 
 「親しいと短いやり取りでも通じる」理由である共有文脈は2人の間にあるので、`shared_context`・`inside_jokes`・`how_we_met`・`closeness_rating` などは関係に付くフィールドとして定義している。フィールドの `applies_to` で人・組織・グループ・関係のどれに付けられるかを決め、トリガーで検証する。
 
-同じ2人の間に複数の関係を持てる（同僚かつ友人）。関係にも有効期間がある。有向の関係（上司→部下、人→所属組織）は `inverse_label` で逆向きの表示名を持ち、`active_edges` ビューで両方向から引ける。
+同じ2人の間に複数の関係を持てる（同僚かつ友人）。関係にも有効期間がある。有向の関係（上司→部下、人→所属組織）は「source は target の `label`」と読み、`inverse_label` は target の役割。`active_edges` ビューで両方向から引け、`label` はその行の `from` の役割、`other_label` は相手の役割。家族の続柄（父・母・婚約者など）は関係の種類を分けず、`family` / `partner` 関係にフィールド `kinship_term` で付ける（[ontology.md](ontology.md)）。
 
 ### 3. フィールドマスターと表記ゆれ防止
 

@@ -40,6 +40,9 @@ AIエージェント（各 AITuber、管理者用エージェントなど）が�
 - `self`: このトークンの「自分」。`linked`: 共有ワークスペースの同一人物
 - `profile`: 自分と同一人物の主張（一人称・口調・好きなもの…）を `{key, label, values}` で
 - `relationships`: 相手ごとの関係（`relation_label`）と関係の主張（呼び方・共有している文脈…）、強さ。強い順に最大 30 件
+- `relation_label` は自分の役割、`other_label` は相手の役割
+- 承認済みのフィールド・関係の種類の記録だけを含む（提案中のものは `omitted_unapproved` にキーだけ出る）
+- 配信での配慮を強制する: `stream_mention_policy = avoid` の人は含まず、`nickname_only` の人は呼び方だけ、`is_minor` の人は呼び方以外を渡さず `handling` に印を付ける（[ontology.md](ontology.md#33-persona_contextaituber-のプロンプトに渡すもの)）
 - 機微情報（`ai_shareable = false`）は `sensitive_read` 権限がない限り含まない。無効なトークンは 401、「自分」がないトークンは 404
 - 読み取り専用。docker compose では `/api/*` も MCP サーバーへ振り分ける
 

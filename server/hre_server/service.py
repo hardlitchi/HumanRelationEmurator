@@ -203,12 +203,15 @@ _FIELD_COLS = """key, label, description, value_type, enum_options, applies_to, 
 
 def resolve_field(conn: Connection, name: str) -> dict:
     row = _one(conn, f"SELECT {_FIELD_COLS} FROM hre.resolve_field(%s) WHERE key IS NOT NULL", (name,))
+    rel = _relation_name_clash(conn, name)
+    rel_hint = (f"「{name}」は関係の種類 {rel} の名前でもあります。人と人のつながりそのものなら "
+                f"add_relationship(relation_type='{rel}') で関係を張ってください") if rel else None
     if row:
-        return {"found": True, "field": row}
+        return {"found": True, "field": row, **({"relation_type_hint": rel_hint} if rel_hint else {})}
     sugg = _q(conn, "SELECT key, label, matched, round(score::numeric, 2)::float AS score FROM hre.suggest_fields(%s)",
               (name,))
     return {"found": False, "suggestions": sugg,
-            "hint": "候補に同じ意味のものがあればそれを使い add_field_alias で別名登録。無ければ propose_field。"}
+            "hint": rel_hint or "候補に同じ意味のものがあればそれを使い add_field_alias で別名登録。無ければ propose_field。"}
 
 
 def list_fields(conn: Connection, applies_to: str | None = None) -> list[dict]:
@@ -237,6 +240,10 @@ def propose_field(conn: Connection, actor: Actor, key: str, label: str, value_ty
         hit = _one(conn, "SELECT key FROM hre.resolve_field(%s) WHERE key IS NOT NULL", (name,))
         if hit:
             raise HreError(f"{name!r} は既存フィールド {hit['key']!r} として登録済みです")
+        rel = _relation_name_clash(conn, name)
+        if rel:
+            raise HreError(f"{name!r} は関係の種類 {rel!r} の名前です。関係は add_relationship で張り、"
+                           "関係についての情報はその関係に record_fact で付けてください")
     try:
         with conn.transaction():
             row = _one(conn, """INSERT INTO hre.field_definitions
@@ -272,20 +279,60 @@ def add_field_alias(conn: Connection, actor: Actor, field_key: str, alias: str) 
 
 
 def list_relation_types(conn: Connection) -> list[dict]:
-    return _q(conn, """SELECT key, label, directed, inverse_label, source_kinds, target_kinds, requires_trusted_source,
+    return _q(conn, """SELECT key, label, description, directed, inverse_label, source_kinds, target_kinds,
+                              requires_trusted_source, status,
                               (SELECT array_agg(alias ORDER BY alias) FROM hre.relation_type_aliases a
                                 WHERE a.relation_type_id = t.id) AS aliases
                          FROM hre.relation_types t WHERE status <> 'deprecated' ORDER BY key""")
 
 
+#: 続柄の言葉は関係の種類ではない。family / partner に kinship_term を付けて書くよう案内する
+KINSHIP_TERMS = {
+    "family": {"父", "母", "兄", "姉", "弟", "妹", "祖父", "祖母", "子", "息子", "娘", "孫", "叔父", "伯父", "叔母",
+               "伯母", "いとこ", "従兄弟", "従姉妹", "甥", "姪", "義父", "義母", "義兄", "義姉", "義弟", "義妹",
+               "父親", "母親", "お父さん", "お母さん", "親", "兄弟", "姉妹", "きょうだい",
+               "father", "mother", "brother", "sister", "son", "daughter", "parent", "sibling", "cousin"},
+    "partner": {"婚約者", "夫", "妻", "彼氏", "彼女", "旦那", "嫁", "fiance", "fiancee", "husband", "wife",
+                "boyfriend", "girlfriend"},
+}
+
+
+def _relation_type_hint(conn: Connection, name: str) -> str | None:
+    """マスターに無い関係の名前について、正しい書き方を返す（入れ替えや自動変換はしない）。"""
+    for key, terms in KINSHIP_TERMS.items():
+        if _one(conn, """SELECT hre.normalize_label(%s) IN (SELECT hre.normalize_label(t) FROM unnest(%s::text[]) t)
+                         AS hit""", (name, sorted(terms)))["hit"]:
+            return (f"「{name}」は続柄です。{key} 関係（無向）を張り、その関係に record_fact(field='kinship_term', "
+                    f"value='{name}', relationship_id=...) で自分から見た続柄を付けてください")
+    inv = _one(conn, """SELECT key, label, inverse_label FROM hre.relation_types
+                         WHERE directed AND status <> 'deprecated'
+                           AND hre.normalize_label(inverse_label) = hre.normalize_label(%s)""", (name,))
+    if inv:
+        return (f"「{name}」は {inv['key']} の逆向き（target 側の役割）です。{inv['label']}にあたる人を source、"
+                f"{inv['inverse_label']}にあたる人を target にして {inv['key']} で書いてください")
+    return None
+
+
 def _relation_type(conn: Connection, name: str) -> dict:
-    row = _one(conn, """SELECT t.id::text, t.key FROM hre.relation_types t
+    row = _one(conn, """SELECT t.id::text, t.key, t.label, t.inverse_label, t.directed FROM hre.relation_types t
                          WHERE t.key = hre.normalize_label(%(n)s)
                             OR t.id = (SELECT relation_type_id FROM hre.relation_type_aliases
                                         WHERE alias = hre.normalize_label(%(n)s))""", {"n": name})
     if row is None:
-        raise HreError(f"関係の種類 {name!r} はマスターにありません。list_relation_types で確認してください")
+        hint = _relation_type_hint(conn, name)
+        raise HreError(f"関係の種類 {name!r} はマスターにありません。"
+                       + (hint or "list_relation_types で確認してください"))
     return row
+
+
+def _relation_name_clash(conn: Connection, name: str) -> str | None:
+    """フィールドの名前として使われた語が、関係の種類のキー・別名でもあれば、その関係の種類のキー。"""
+    row = _one(conn, """SELECT t.key FROM hre.relation_types t
+                         WHERE t.status <> 'deprecated'
+                           AND (t.key = hre.normalize_label(%(n)s)
+                                OR t.id = (SELECT relation_type_id FROM hre.relation_type_aliases
+                                            WHERE alias = hre.normalize_label(%(n)s)))""", {"n": name})
+    return row["key"] if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +442,7 @@ def get_entity(conn: Connection, actor: Actor, entity_id: str, detail: bool = Fa
     edge_extra = """, a.directed, r.valid_from, (SELECT name FROM hre.actors WHERE id = r.recorded_by) AS recorded_by""" \
         if detail else ""
     edges = _q(conn, f"""
-        SELECT a.relationship_id::text, a.relation_type, a.label, a.direction, a.to_id::text AS other_id,
+        SELECT a.relationship_id::text, a.relation_type, a.label, a.other_label, a.direction, a.to_id::text AS other_id,
                o.display_name AS other_name, o.kind AS other_kind{edge_extra}
           FROM hre.active_edges a JOIN hre.entities o ON o.id = a.to_id
           JOIN hre.relationships r ON r.id = a.relationship_id
@@ -534,6 +581,9 @@ def record_fact(conn: Connection, actor: Actor, field: str, value: Any, epistemi
                 conn, """SELECT unnest(ARRAY[source_entity_id, target_entity_id])::text AS id
                            FROM hre.relationships WHERE id = %s""", (relationship_id,))]
             err = _queue_review(conn, actor, ws_id, "fact", payload, subjects + ([value_entity] if value_entity else []))
+            if f["key"] == "ng_topics":
+                err = HreError(str(err) + "\nng_topics はキャラクター自身の NG です。ほかの人（リスナーなど）について"
+                                          "避ける話題なら topics_to_avoid に書けば、確認なしで記録できます。")
         raise err from e
     return {"fact_id": row["id"], "field": f["key"]}
 
@@ -557,12 +607,17 @@ def add_relationship(conn: Connection, actor: Actor, relation_type: str, source_
     ws_id = _ws_of(conn, "entities", source_entity_id)
     _check_write(actor, ws_id)
     rt = _relation_type(conn, relation_type)
+    # 無向の関係は A→B と B→A を同じものとみなす
     existing = _one(conn, """SELECT id::text FROM hre.relationships
-                              WHERE relation_type_id = %s AND source_entity_id = %s AND target_entity_id = %s
+                              WHERE relation_type_id = %(t)s
+                                AND ((source_entity_id = %(s)s AND target_entity_id = %(d)s)
+                                     OR (NOT %(directed)s AND source_entity_id = %(d)s AND target_entity_id = %(s)s))
                                 AND (valid_to IS NULL OR valid_to > current_date)""",
-                    (rt["id"], source_entity_id, target_entity_id))
+                    {"t": rt["id"], "s": source_entity_id, "d": target_entity_id, "directed": rt["directed"]})
+    reading = _relation_reading(conn, rt, source_entity_id, target_entity_id)
     if existing:
-        return {"relationship_id": existing["id"], "relation_type": rt["key"], "already_exists": True}
+        return {"relationship_id": existing["id"], "relation_type": rt["key"], "reading": reading,
+                "already_exists": True}
     try:
         with conn.transaction():
             row = _one(conn, """INSERT INTO hre.relationships (workspace_id, relation_type_id, source_entity_id,
@@ -578,7 +633,18 @@ def add_relationship(conn: Connection, actor: Actor, relation_type: str, source_
                        "target_entity_id": target_entity_id, "valid_from": valid_from, "source_id": source_id}
             err = _queue_review(conn, actor, ws_id, "relationship", payload, [source_entity_id, target_entity_id])
         raise err from e
-    return {"relationship_id": row["id"], "relation_type": rt["key"]}
+    return {"relationship_id": row["id"], "relation_type": rt["key"], "reading": reading}
+
+
+def _relation_reading(conn: Connection, rt: dict, source_entity_id: str, target_entity_id: str) -> str:
+    """記録した向きを文にしたもの。エージェントが向きの取り違えに自分で気づけるように返す。"""
+    names = {r["id"]: r["display_name"] for r in _q(
+        conn, "SELECT id::text, display_name FROM hre.entities WHERE id = ANY(%s::uuid[])",
+        ([source_entity_id, target_entity_id],))}
+    s, t = names.get(source_entity_id, source_entity_id), names.get(target_entity_id, target_entity_id)
+    if rt["directed"]:
+        return f"{s} は {t} の{rt['label']}（{t} は {s} の{rt['inverse_label'] or rt['label']}）"
+    return f"{s} と {t} は{rt['label']}"
 
 
 def end_relationship(conn: Connection, actor: Actor, relationship_id: str, valid_to: str) -> dict:
@@ -906,9 +972,18 @@ def persona_context(conn: Connection, actor: Actor) -> dict:
     names = {r["id"]: r["display_name"] for r in _q(
         conn, "SELECT id::text, display_name FROM hre.entities WHERE id = ANY(%s::uuid[])", (list(ref_ids),))}
 
+    # 承認されていないフィールド・関係の種類の記録は AITuber のプロンプトに入れない。
+    # 保護つきのフィールド（backstory など）と同じ意味の別名のフィールドを提案して、保護を迂回させないため
+    approved_fields = {r["key"] for r in _q(conn, "SELECT key FROM hre.field_definitions WHERE status = 'approved'")}
+    approved_types = {r["key"] for r in _q(conn, "SELECT key FROM hre.relation_types WHERE status = 'approved'")}
+    omitted: set[str] = set()
+
     profile: dict[str, dict] = {}
     for card in cards:
         for f in card["facts"]:
+            if f["field_key"] not in approved_fields:
+                omitted.add(f["field_key"])
+                continue
             item = profile.setdefault(f["field_key"], {"key": f["field_key"], "label": f["field_label"],
                                                        "values": []})
             value = _context_value(f, names)
@@ -921,26 +996,78 @@ def persona_context(conn: Connection, actor: Actor) -> dict:
         for edge in card["relationships"]:
             if edge["other_id"] in ids:
                 continue
+            if edge["relation_type"] not in approved_types:
+                omitted.add(edge["relation_type"])
+                continue
             rel = rels.setdefault(edge["other_id"], {
                 "other_id": edge["other_id"], "other_name": edge["other_name"], "other_kind": edge["other_kind"],
-                "relation": edge["relation_type"], "relation_label": edge["label"], "facts": [], "strength": None})
+                "relation": edge["relation_type"], "relation_label": edge["label"],
+                "other_label": edge["other_label"], "facts": [], "strength": None})
             if edge["relation_type"] != rel["relation"] and edge["label"] not in rel["relation_label"].split("・"):
                 rel["relation_label"] += "・" + edge["label"]
+            if edge["relation_type"] != rel["relation"] and edge["other_label"] not in rel["other_label"].split("・"):
+                rel["other_label"] += "・" + edge["other_label"]
             for f in edge["facts"]:
+                if f["field_key"] not in approved_fields:
+                    omitted.add(f["field_key"])
+                    continue
                 fact = {"key": f["field_key"], "label": f["field_label"], "value": _context_value(f, names)}
                 if fact["value"] and fact not in rel["facts"]:
                     rel["facts"].append(fact)
             s = (edge.get("strength") or {}).get("strength")
             if s is not None and (rel["strength"] is None or s > rel["strength"]):
                 rel["strength"] = s
+    _apply_mention_handling(conn, rels)
     relationships = sorted(rels.values(), key=lambda r: (-(r["strength"] or 0), -len(r["facts"]), r["other_name"]))
     return {
         "self": {"id": me["id"], "name": me["display_name"], "workspace": me["key"]},
         "linked": [{"id": r["id"], "name": r["display_name"], "workspace": r["key"]} for r in linked],
         "profile": [p for p in profile.values() if p["values"]],
         "relationships": relationships[:CONTEXT_MAX_RELATIONSHIPS],
+        **({"omitted_unapproved": sorted(omitted)} if omitted else {}),
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
+
+
+_MENTION_ORDER = {"ok": 0, "nickname_only": 1, "avoid": 2}
+
+
+def _apply_mention_handling(conn: Connection, rels: dict[str, dict]) -> None:
+    """配信で話すときの配慮を、プロンプトに渡す前にここで守らせる（LLM 任せにしない）。
+
+    - stream_mention_policy は記録のうち最も厳しいものを採る。avoid の人は渡さない。
+      nickname_only の人は呼び方（calls_them）だけを名前として渡し、呼び方が無ければ渡さない
+    - is_minor が1件でも true の人は、関係の情報を渡さず handling に minor の印だけを付ける
+    """
+    if not rels:
+        return
+    rows = _q(conn, """SELECT entity_id::text, field_key, value FROM hre.current_facts
+                        WHERE entity_id = ANY(%s::uuid[]) AND field_key IN ('is_minor', 'stream_mention_policy')""",
+              (list(rels),))
+    minor = {r["entity_id"] for r in rows if r["field_key"] == "is_minor" and r["value"] is True}
+    policy: dict[str, str] = {}
+    for r in rows:
+        if r["field_key"] == "stream_mention_policy" and r["value"] in _MENTION_ORDER:
+            if _MENTION_ORDER[r["value"]] > _MENTION_ORDER.get(policy.get(r["entity_id"], "ok"), 0):
+                policy[r["entity_id"]] = r["value"]
+    for oid in list(rels):
+        rel, marks = rels[oid], []
+        if policy.get(oid) == "avoid":
+            del rels[oid]
+            continue
+        if policy.get(oid) == "nickname_only":
+            nick = next((f["value"] for f in rel["facts"] if f["key"] == "calls_them"), None)
+            if not nick:
+                del rels[oid]
+                continue
+            rel["other_name"] = nick
+            rel["facts"] = [f for f in rel["facts"] if f["key"] == "calls_them"]
+            marks.append("nickname_only")
+        if oid in minor:
+            rel["facts"] = [f for f in rel["facts"] if f["key"] == "calls_them"]
+            marks.append("minor")
+        if marks:
+            rel["handling"] = marks
 
 
 # ---------------------------------------------------------------------------
