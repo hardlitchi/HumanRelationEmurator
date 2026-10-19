@@ -46,6 +46,14 @@ INSTRUCTIONS = """\
    出典は原作や公式設定資料を add_source(kind="document") で保存し、title に作品名と巻・話・ページ、uri に URL を入れる。
    epistemic は作中の扱いに読み替える: stated=本人（キャラ）の作中の発言 / observed=作中の描写・地の文 /
    reported=他のキャラの発言 / inferred=読者の考察・二次設定。公式設定は confidence を高く、考察は低くする。
+9. 関係の向きは「source は target の <label>」と読む（listener_of: リスナー → 配信者）。add_relationship が返す
+   reading で向きを確かめる。逆向きの言い方（部下・配信者・担当タレント）や続柄（父・婚約者）は関係の種類ではない。
+   家族・パートナーは family / partner 関係を張り、その関係に kinship_term（自分から見た続柄）を付ける。
+10. 推測で関係を張らない（「付き合っているらしい」は partner にしない）。推測は人の notes などに inferred で書く。
+    confidence は、推測なら 0.5 以下、配信チャットや SNS での本人談なら 0.7 以下にする。
+11. 配信での配慮: 本人が望めば stream_mention_policy（ok / nickname_only / avoid）、未成年と分かれば is_minor を記録する。
+    is_minor が true の人について新しい個人情報は記録しない。VTuber・AITuber・リスナーの本名（legal_name）は記録しない。
+    キャラクター自身の NG は ng_topics（保護あり）、ほかの人について避ける話題は topics_to_avoid。
 """
 
 _stdio_actor_id: str | None = None
@@ -142,6 +150,9 @@ def build_server(auth_url: str | None = None) -> MCPServer:
         """自分（このトークンの AITuber）の設定と人間関係をまとめて返す。台本・セリフ・トークを作るときの前提に使う。
 
         profile は一人称・口調などの設定、relationships は相手ごとの関係・呼び方・共有している文脈（強い順）。
+        relation_label は自分の役割、other_label は相手の役割。承認済みのフィールド・関係の種類の記録だけを返す
+        （提案中のものは omitted_unapproved にキーだけ出る）。配信で触れない人（stream_mention_policy = avoid）は含まず、
+        handling に nickname_only（呼び方だけで触れる）や minor（未成年。個人的な話題を掘らない）が付く。
         """
         return _call(lambda c, a: service.persona_context(c, a))
 
@@ -252,7 +263,8 @@ def build_server(auth_url: str | None = None) -> MCPServer:
     def add_relationship(relation_type: Annotated[str, Field(description="list_relation_types のキーか別名")],
                          source_entity_id: Id, target_entity_id: Id, valid_from: str | None = None,
                          source_id: Id | None = None) -> dict:
-        """2者の関係を追加する。有向の関係は source → target の向き（例: listener_of はリスナー → 配信者）。"""
+        """2者の関係を追加する。有向の関係は source → target の向き（例: listener_of はリスナー → 配信者）。
+        返り値の reading（「A は B の〇〇」）で向きが合っているか確かめる。無向の関係は向きを問わず1本だけ作る。"""
         return _call(service.add_relationship, _write=True, relation_type=relation_type, source_entity_id=source_entity_id,
                      target_entity_id=target_entity_id, valid_from=valid_from, source_id=source_id)
 

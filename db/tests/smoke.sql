@@ -125,6 +125,7 @@ BEGIN
         'retracted fact drops out';
 
     ASSERT (SELECT label FROM active_edges WHERE from_id = acme AND to_id = tanaka) = '所属メンバー', 'inverse label';
+    ASSERT (SELECT other_label FROM active_edges WHERE from_id = acme AND to_id = tanaka) = '所属', 'other label';
 
     -- 名寄せ
     PERFORM merge_entities(tanaka2, tanaka, agent);

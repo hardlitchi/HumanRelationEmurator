@@ -40,7 +40,7 @@
 <ul class="list">
 {% for t in relation_types %}
   <li class="row"><span><strong>{{ t.label }}</strong> <code>{{ t.key }}</code>{% if t.requires_trusted_source %} <span class="tag">🔒 人のみ</span>{% endif %}</span>
-    <span class="muted small">{% if t.directed %}{{ t.label }} → {{ t.inverse_label }}{% else %}双方向{% endif %}</span></li>
+    <span class="muted small">{% if t.directed %}{{ t.label }} → {{ t.inverse_label }}{% else %}双方向{% endif %}{% if t.description %}<br>{{ t.description }}{% endif %}</span></li>
 {% endfor %}
 </ul>
 {% endblock %}
