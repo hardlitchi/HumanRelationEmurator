@@ -195,6 +195,56 @@ def test_admin_screens_and_session_revocation(app, conn, world):
     assert f"ws-{sfx}" in c.get("/admin/access").text
 
 
+def test_admin_issues_persona_tokens_in_web_ui(app, conn, world):
+    """hre-admin add-persona と同じことを Web UI の「キャラのトークン」で完結できる。"""
+    sfx = uuid.uuid4().hex[:6]
+    key = f"chara-{sfx}"
+    c = _login(app, world.tokens["admin"])
+    csrf = _csrf(c, "/admin/access")
+    assert "キャラのトークン" in c.get("/admin/access").text
+
+    # キャラを作ると、人格ワークスペース・「自分」・key-agent ができ、トークンがその場で出る
+    r = c.post("/admin/access", data={"csrf": csrf, "op": "persona_add", "key": key, "display_name": "莉央",
+                                      "group": world.group})
+    token = re.search(r'value="(hre_[^"]+)"', r.text).group(1)
+    assert r.headers["cache-control"] == "no-store" and "キャラの台本にする" in r.text
+    agent = service.authenticate(conn, token)
+    assert agent.name == f"{key}-agent"
+    assert service.persona_context(conn, agent)["self"]["name"] == "莉央"
+    assert {w["key"] for w in service.list_workspaces(conn, agent)} == {key, world.group}
+
+    # 用途ごとの新しいトークン（vmf 用）。key-agent のトークンはそのまま使える
+    r = c.post("/admin/access", data={"csrf": csrf, "op": "persona_token", "key": key, "purpose": "vmf"})
+    vmf = re.search(r'value="(hre_[^"]+)"', r.text).group(1)
+    assert service.authenticate(conn, vmf).name == f"{key}-vmf"
+    assert service.authenticate(conn, token) is not None
+    assert service.persona_context(conn, service.authenticate(conn, vmf))["self"]["name"] == "莉央"
+    r = c.post("/admin/access", data={"csrf": csrf, "op": "persona_token", "key": key, "purpose": "vmf"},
+               follow_redirects=True)
+    assert "すでにあります" in r.text
+
+    # 発行し直すと古いトークンは使えない
+    r = c.post("/admin/access", data={"csrf": csrf, "op": "persona_token", "key": key, "actor": f"{key}-agent"})
+    token2 = re.search(r'value="(hre_[^"]+)"', r.text).group(1)
+    assert service.authenticate(conn, token) is None and service.authenticate(conn, token2) is not None
+
+    # 人のトークンや別のキャラのトークンはここから作り直せない
+    owner_name = world.owner_human.name
+    r = c.post("/admin/access", data={"csrf": csrf, "op": "persona_token", "key": key, "actor": owner_name},
+               follow_redirects=True)
+    assert "flash err" in r.text and service.authenticate(conn, world.tokens["owner"]) is not None
+    r = c.post("/admin/access", data={"csrf": csrf, "op": "persona_add", "key": "Bad Key", "display_name": "x"},
+               follow_redirects=True)
+    assert "flash err" in r.text
+    page = c.get("/admin/access").text
+    assert f"{key}-agent" in page and f"{key}-vmf" in page
+
+    # 管理者以外は使えない
+    owner = _login(app, world.tokens["owner"])
+    assert owner.post("/admin/access", data={"csrf": _csrf(owner, "/"), "op": "persona_add", "key": key + "x",
+                                             "display_name": "y"}).status_code in (403, 404)
+
+
 def test_admin_erase_requires_typed_name(app, conn, world):
     x = service.create_entity(conn, world.agent_a, "person", "消す人", world.a)["id"]
     service.record_fact(conn, world.agent_a, "趣味", "釣り", "stated", entity_id=x)

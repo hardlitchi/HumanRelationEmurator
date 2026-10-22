@@ -951,7 +951,7 @@ def persona_context(conn: Connection, actor: Actor) -> dict:
                           WHERE e.is_self AND e.merged_into_id IS NULL AND e.workspace_id = ANY(%s::uuid[])
                           ORDER BY w.kind = 'persona' DESC, w.key""", (writable,))
     if not selves:
-        raise HreError("このトークンには「自分」のノードがありません（hre-admin add-persona で作ります）")
+        raise HreError("このトークンには「自分」のノードがありません（Web UI の「アクセス」→「キャラのトークン」か hre-admin add-persona で作ります）")
     me = selves[0]
     readable = list(_readable_ids(conn, actor))
     linked = _q(conn, """
@@ -1543,6 +1543,29 @@ def list_all_workspaces(conn: Connection, actor: Actor) -> list[dict]:
                          FROM hre.workspaces w ORDER BY w.kind, w.key""")
 
 
+def list_personas(conn: Connection, actor: Actor) -> list[dict]:
+    """アクセス管理の「キャラのトークン」: 人格ワークスペースごとに、読める共有ワークスペースと、
+    そこに書けるエージェント（= そのキャラのトークン）。"""
+    _require_admin(actor)
+    personas = _q(conn, """SELECT w.key, w.name,
+                                  (SELECT e.display_name FROM hre.entities e
+                                    WHERE e.workspace_id = w.id AND e.is_self AND e.merged_into_id IS NULL
+                                    LIMIT 1) AS self_name,
+                                  (SELECT array_agg(g.key ORDER BY g.key) FROM hre.workspace_shares s
+                                     JOIN hre.workspaces g ON g.id = s.workspace_id
+                                    WHERE s.reader_workspace_id = w.id) AS groups
+                             FROM hre.workspaces w WHERE w.kind = 'persona' ORDER BY w.key""")
+    agents = _q(conn, """SELECT w.key AS workspace, a.name, a.revoked_at,
+                                (SELECT max(at) FROM hre.audit_log l WHERE l.actor_id = a.id) AS last_write_at
+                           FROM hre.workspace_grants g JOIN hre.actors a ON a.id = g.actor_id
+                           JOIN hre.workspaces w ON w.id = g.workspace_id
+                          WHERE w.kind = 'persona' AND a.kind = 'agent' AND 'write' = ANY(g.scopes)
+                          ORDER BY a.revoked_at IS NOT NULL, a.name""")
+    for p in personas:
+        p["agents"] = [a for a in agents if a["workspace"] == p["key"]]
+    return personas
+
+
 def revoke_grant(conn: Connection, actor_name: str, workspace_key: str) -> None:
     conn.execute("""DELETE FROM hre.workspace_grants g USING hre.actors a, hre.workspaces w
                      WHERE g.actor_id = a.id AND g.workspace_id = w.id AND a.name = %s AND w.key = %s""",
@@ -1597,7 +1620,10 @@ def add_persona(conn: Connection, key: str, display_name: str, group: str | None
                                      VALUES (%s, 'person', %s, true) RETURNING id::text""", (ws["id"], display_name))
             conn.execute("""INSERT INTO hre.entity_identifiers (workspace_id, entity_id, scheme, value)
                             VALUES (%s, %s, 'name', %s)""", (ws["id"], self_row["id"], display_name))
-        if _one(conn, "SELECT 1 AS x FROM hre.actors WHERE name = %s", (actor_name,)):
+        existing = _one(conn, "SELECT kind FROM hre.actors WHERE name = %s", (actor_name,))
+        if existing and existing["kind"] != "agent":   # 人のトークンをキャラ用に作り直さない
+            raise HreError(f"{actor_name!r} はエージェントではありません（{existing['kind']}）")
+        if existing:
             token = rotate_token(conn, actor_name)
         else:
             _, token = create_actor(conn, actor_name, "agent")
