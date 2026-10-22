@@ -94,6 +94,8 @@ button.link.danger { color: var(--err); }
 .search input { flex: 1; min-width: 0; }
 .danger-zone { border-color: var(--err); }
 .token input { width: 100%; }
+.copy-row { display: flex; gap: 8px; }
+.copy-row input { flex: 1; min-width: 0; }
 @media (max-width: 560px) {
   main { padding: 12px 16px; }
   .top nav { order: 3; width: 100%; }

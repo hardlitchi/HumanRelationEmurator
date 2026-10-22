@@ -46,3 +46,15 @@ document.addEventListener("keydown", (ev) => {
   const el = document.querySelector(`.decide [data-key="${ev.key}"]`);
   if (el) el.click();
 });
+
+// トークンのコピー
+document.querySelectorAll("[data-copy]").forEach((btn) => btn.addEventListener("click", async () => {
+  const el = document.querySelector(btn.dataset.copy);
+  try {
+    await navigator.clipboard.writeText(el.value);
+  } catch {
+    el.select();
+    document.execCommand("copy");
+  }
+  btn.textContent = "コピーしました";
+}));

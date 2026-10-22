@@ -72,6 +72,9 @@ def test_add_persona_creates_workspace_actor_and_reads_group(conn, world):
 
     with pytest.raises(HreError, match="共有ワークスペース"):
         service.add_persona(conn, key + "x", "誰か", "no-such-group")
+    # 人（human）のトークンをキャラ用に作り直さない
+    with pytest.raises(HreError, match="エージェントではありません"):
+        service.add_persona(conn, key, "莉央", None, world.owner_human.name)
 
 
 def test_add_persona_cli(database_url, world):

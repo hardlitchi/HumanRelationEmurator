@@ -18,6 +18,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import os
 import secrets
 import time
@@ -626,11 +627,17 @@ def field_status(request, conn, me, form):
     return _back(request, ok="フィールドを更新しました")
 
 
+def _access_ctx(conn: Connection, me: service.Actor, new_token: dict | None = None) -> dict:
+    return {"actors": service.list_actors(conn, me), "workspaces": service.list_all_workspaces(conn, me),
+            "personas": service.list_personas(conn, me), "new_token": new_token}
+
+
 @page
 def admin_access(request, conn, me):
-    return "admin_access.html", {"actors": service.list_actors(conn, me),
-                                 "workspaces": service.list_all_workspaces(conn, me),
-                                 "new_token": None}
+    return "admin_access.html", _access_ctx(conn, me)
+
+
+PERSONA_KEY = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
 
 
 def _admin_only(me: service.Actor) -> None:
@@ -644,8 +651,38 @@ def admin_post(request, conn, me, form):
     _admin_only(me)
     op = str(form["op"])
     token = None
+    persona = None   # キャラのトークンなら、貼る場所の案内を出す
+    name = str(form.get("name") or "")
     try:
         match op:
+            case "persona_add":
+                key, persona = str(form["key"]).strip(), str(form["display_name"]).strip()
+                if not PERSONA_KEY.match(key) or not persona:
+                    raise service.HreError("キーは英小文字で始まる英数字・-・_、名前は必須です")
+                _, token = service.add_persona(conn, key, persona, _opt(form, "group"))
+                name = f"{key}-agent"
+                msg = f"キャラ {persona} を作成しました"
+            case "persona_token":
+                # 再発行（actor あり）か、用途ごとの新しいトークン（purpose あり。例: vmf → rio-vmf）
+                key = str(form["key"])
+                ws = next((p for p in service.list_personas(conn, me) if p["key"] == key), None)
+                if ws is None:
+                    raise service.HreError(f"キャラ {key!r} がありません")
+                persona = ws["self_name"] or ws["name"]
+                if form.get("actor"):
+                    name = str(form["actor"])
+                    if name not in [a["name"] for a in ws["agents"]]:
+                        raise service.HreError(f"{name} は {key} のトークンではありません")
+                    msg = f"{name} のトークンを再発行しました"
+                else:
+                    purpose = str(form.get("purpose") or "").strip().lower()
+                    name = f"{key}-{purpose}"
+                    if not PERSONA_KEY.match(purpose) or not PERSONA_KEY.match(name):
+                        raise service.HreError("用途は英小文字で始まる英数字・-・_で入力してください（例: vmf）")
+                    if any(a["name"] == name for a in service.list_actors(conn, me)):
+                        raise service.HreError(f"{name} はすでにあります。再発行はその行のボタンから")
+                    msg = f"{name} のトークンを発行しました"
+                _, token = service.add_persona(conn, key, persona, None, name)
             case "create_workspace":
                 service.create_workspace(conn, str(form["key"]).strip(), str(form["name"]).strip(), str(form["kind"]))
                 msg = "ワークスペースを作成しました"
@@ -656,8 +693,8 @@ def admin_post(request, conn, me, form):
                 service.unshare(conn, str(form["workspace"]), str(form["reader"]))
                 msg = "共有を解除しました"
             case "create_actor":
-                _, token = service.create_actor(conn, str(form["name"]).strip(), str(form["kind"]),
-                                                form.get("is_admin") == "on")
+                name = name.strip()
+                _, token = service.create_actor(conn, name, str(form["kind"]), form.get("is_admin") == "on")
                 msg = f"{form['name']} を作成しました"
             case "rotate":
                 token = service.rotate_token(conn, str(form["name"]))
@@ -682,9 +719,8 @@ def admin_post(request, conn, me, form):
     if token is None:
         return _back(request, "/admin/access", ok=msg)
     # トークンは URL に載せず、その場で表示する
-    ctx = {"actors": service.list_actors(conn, me), "workspaces": service.list_all_workspaces(conn, me),
-           "new_token": {"name": str(form["name"]), "token": token}, "flash": msg, "error": None, "me": me,
-           "csrf": request.app.state.sessions.csrf(request.cookies[COOKIE])}
+    ctx = {**_access_ctx(conn, me, {"name": name, "token": token, "persona": persona}),
+           "flash": msg, "error": None, "me": me, "csrf": request.app.state.sessions.csrf(request.cookies[COOKIE])}
     resp = templates.TemplateResponse(request, "admin_access.html", ctx)
     resp.headers["Cache-Control"] = "no-store"
     return resp

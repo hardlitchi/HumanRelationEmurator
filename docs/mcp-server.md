@@ -66,7 +66,7 @@ hre-admin grant aituber-a-agent aituber-a read,write
 ```
 
 AITuber 1 人分（ペルソナのワークスペース・その「自分」ノード・読み書きできるエージェント・グループ共有の閲覧）は
-`add-persona` でまとめて作れる。何度実行しても作り直さず、トークンだけ新しく発行する（古いトークンは無効になる）。
+Web UI の「アクセス」→「キャラのトークン」（[web-ui.md](web-ui.md#キャラのトークン)）か `add-persona` でまとめて作れる。何度実行しても作り直さず、トークンだけ新しく発行する（古いトークンは無効になる）。
 
 ```sh
 hre-admin create-workspace fuyuakinatsuharu "冬秋夏春" shared   # 事務所の公式設定と、メンバー同士の関係

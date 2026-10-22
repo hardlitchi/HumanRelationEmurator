@@ -4,12 +4,64 @@
 <h1>アクセス管理</h1>
 
 {% if new_token %}
-<section class="card token">
+<section class="card token" id="new-token">
   <h2>{{ new_token.name }} のトークン</h2>
-  <p>この画面を離れると二度と表示されません。エージェントの設定か、本人に安全な方法で渡してください。</p>
-  <input readonly value="{{ new_token.token }}" class="mono" data-select>
+  <p>この画面を離れると二度と表示されません。{% if new_token.persona %}コピーして、使う場所に貼り付けてください。{% else %}エージェントの設定か、本人に安全な方法で渡してください。{% endif %}</p>
+  <div class="copy-row"><input readonly value="{{ new_token.token }}" class="mono" data-select id="new-token-value">
+    <button type="button" class="secondary" data-copy="#new-token-value">コピー</button></div>
+  {% if new_token.persona %}
+  <ul class="small">
+    <li><strong>voicemodel-factory</strong>: STEP 01「録音」→「キャラの台本にする」→「HRE のキャラから選ぶ」に貼り付けて「＋ 追加」</li>
+    <li><strong>KAGURA STAGE</strong>: ディレクター画面 F8「配役」→ {{ new_token.persona }} の「人間関係（HRE）」に貼り付けて「保存」</li>
+  </ul>
+  {% endif %}
 </section>
 {% endif %}
+
+<h2>キャラのトークン</h2>
+<p class="muted small">AITuber 1 人ごとの人格ワークスペースと、その人格と人間関係を読むためのトークン（<code>hre_…</code>）。voicemodel-factory や KAGURA STAGE に貼り付けて使います。</p>
+<ul class="list">
+{% for p in personas %}
+  <li>
+    <div class="row">
+      <span><a href="/w/{{ p.key }}"><strong>{{ p.self_name or p.name }}</strong></a> <code>{{ p.key }}</code>
+        {% if not p.self_name %}<span class="tag warn">「自分」なし</span>{% endif %}</span>
+      <span class="muted small">{% if p.groups %}読める共有: {{ p.groups|join('・') }}{% else %}共有なし{% endif %}</span>
+    </div>
+    {% for a in p.agents %}
+    <div class="inline">
+      <span class="{{ 'dim' if a.revoked_at else '' }}"><code>{{ a.name }}</code>{% if a.revoked_at %} <span class="tag">無効</span>{% endif %}
+        <span class="muted small">最終書き込み {{ a.last_write_at|dt or 'なし' }}</span></span>
+      <form method="post" action="/admin/access"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}">
+        <input type="hidden" name="op" value="persona_token"><input type="hidden" name="key" value="{{ p.key }}"><input type="hidden" name="actor" value="{{ a.name }}">
+        <button class="secondary" data-confirm="{{ a.name }} のトークンを発行し直すと、今のトークンは使えなくなります（貼ってある所は貼り直しが必要）。よいですか？">{{ '有効にして発行' if a.revoked_at else '発行し直す' }}</button></form>
+    </div>
+    {% else %}<div class="small muted">トークンはまだありません</div>{% endfor %}
+    <form method="post" action="/admin/access" class="inline">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}">
+      <input type="hidden" name="op" value="persona_token"><input type="hidden" name="key" value="{{ p.key }}">
+      <label>用途 <input name="purpose" required pattern="[a-z][a-z0-9_\-]*" value="{{ 'agent' if not p.agents else 'vmf' }}" size="8"></label>
+      <button>トークンを発行</button>
+      <span class="muted small">用途ごとに別のトークン（<code>{{ p.key }}-用途</code>）。ほかの用途のトークンはそのまま使えます</span>
+    </form>
+  </li>
+{% else %}
+  <li class="muted">キャラはまだいません。下の「キャラを追加」から作れます。</li>
+{% endfor %}
+</ul>
+<details class="card"{% if not personas %} open{% endif %}>
+  <summary>キャラを追加</summary>
+  <form method="post" action="/admin/access" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ request.url.path }}"><input type="hidden" name="op" value="persona_add">
+    <label>キー（英小文字） <input name="key" required pattern="[a-z][a-z0-9_\-]*" maxlength="40" placeholder="rio"></label>
+    <label>名前（共有ワークスペースにいる同じ名前の人と同一人物になります） <input name="display_name" required placeholder="秋霞莉央"></label>
+    <label>読める共有ワークスペース <select name="group">
+      {% for w in workspaces if w.kind == 'shared' %}<option value="{{ w.key }}">{{ w.name }}（{{ w.key }}）</option>{% endfor %}
+      <option value="">なし</option></select></label>
+    <button>作成してトークンを発行</button>
+    <span class="muted small">人格ワークスペース・「自分」・エージェント <code>キー-agent</code> をまとめて作ります（<code>hre-admin add-persona</code> と同じ）。</span>
+  </form>
+</details>
 
 <h2>利用者・エージェント</h2>
 <ul class="list">
